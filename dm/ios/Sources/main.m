@@ -13,6 +13,11 @@
 #include "romfs_image.h"
 #include "romfs_identity.h"
 #include "player_env.h"
+#if TARGET_OS_TV
+#define DM_DATA_DIRECTORY NSCachesDirectory   // tvOS apps have no Documents to keep: Library/Caches holds the game files, the saves and the logs, and the system may purge it
+#else
+#define DM_DATA_DIRECTORY NSDocumentDirectory
+#endif
 #ifndef DM_PLAYER_BUILD
 #define DM_PLAYER_BUILD 0
 #endif
@@ -55,7 +60,7 @@ static NSArray<NSString *> *romfs_document_images(NSString *doc) {
 }
 static NSString *romfs_locate(void) {
     NSFileManager *fm = NSFileManager.defaultManager;
-    NSString *doc = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES)[0];
+    NSString *doc = NSSearchPathForDirectoriesInDomains(DM_DATA_DIRECTORY, NSUserDomainMask, YES)[0];
     for (NSString *img in romfs_document_images(doc)) {
         if (!romfs_image_complete(img) || !romfs_identity_accepts(img)) continue;
         // A folder copy from before images is now dead weight of up to many GB (often cut off partway). Deleting its 300,000 files here took longer than iOS allows an app to start
@@ -83,7 +88,7 @@ static NSString *romfs_locate(void) {
 static void aoc_locate(void) {
     if (getenv("DM_AOC_DIR")) return;
     NSFileManager *fm = NSFileManager.defaultManager;
-    NSString *doc = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES)[0];
+    NSString *doc = NSSearchPathForDirectoriesInDomains(DM_DATA_DIRECTORY, NSUserDomainMask, YES)[0];
     for (NSString *d in @[[doc stringByAppendingPathComponent:@"aoc"], [NSBundle.mainBundle.resourcePath stringByAppendingPathComponent:@"aoc"]]) {
         BOOL dir = NO;
         if (![fm fileExistsAtPath:d isDirectory:&dir] || !dir) continue;
@@ -112,7 +117,7 @@ static void romfs_identity_report(NSString *doc) {
 
 static int boot_env(void) {
     NSFileManager *fm = NSFileManager.defaultManager;
-    NSString *doc = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES)[0];
+    NSString *doc = NSSearchPathForDirectoriesInDomains(DM_DATA_DIRECTORY, NSUserDomainMask, YES)[0];
     NSString *res = NSBundle.mainBundle.resourcePath;
     for (NSString *d in @[@"save", @"temp"]) [fm createDirectoryAtPath:[doc stringByAppendingPathComponent:d] withIntermediateDirectories:YES attributes:nil error:nil];
     // Keep game files and scratch data out of device backups (Documents is backed up by default; a RomFS placed there is many GB). Saves, logs and the pipeline list stay in the backup
@@ -160,11 +165,13 @@ static int boot_env(void) {
     if (!getenv("DM_LANG") && [lang isKindOfClass:NSString.class] && lang.length) setenv("DM_LANG", lang.UTF8String, 0);
     fprintf(stderr, "boot: game language %s\n", getenv("DM_LANG") ?: "en-US");
     id<MTLDevice> gpu = MTLCreateSystemDefaultDevice();   // the system default device, the one the graphics layers take (mtl_init repeats this check for the other routes)
+#if !TARGET_OS_TV   // Apple TV 4K: no BC formats, the host decodes them (nvn_mtl.m no_bc)
     if (!gpu.supportsBCTextureCompression) {
         snprintf(g_device_message, sizeof g_device_message, "This device's GPU (%s) cannot read BC-compressed textures, which the games use. It needs an iPhone 15 Pro or newer (A17 Pro chip or later) or an iPad with an M1 chip or later.",
                  gpu ? gpu.name.UTF8String : "no Metal device");
         fprintf(stderr, "[RED] boot: %s\n", g_device_message); return 0;
     }
+#endif
     NSString *romfs = romfs_locate();
     if (!romfs) { romfs_identity_report(doc); fprintf(stderr, "boot: game files not found (Documents/romfs.img, Documents/romfs or <App>/romfs)\n"); return 0; }
     fprintf(stderr, "boot: game files %s\n", romfs.fileSystemRepresentation);
@@ -187,7 +194,9 @@ static int g_boot_ok;
 
 static void *boot_thread(void *p) {
     (void)p;
+#if !TARGET_OS_TV
     static char alt[65536]; stack_t ss = {.ss_sp = alt, .ss_size = sizeof alt}; sigaltstack(&ss, 0);   // crash printing must work on the host thread too
+#endif
     int rc = dm_main(g_argc, g_argv);
     fprintf(stderr, "boot: dm_main returned %d\n", rc);
     return NULL;
