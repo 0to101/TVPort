@@ -1608,6 +1608,7 @@ static _Atomic uint64_t g_itv2_since;   // start of the game's current run of in
 // (fstep_tick, nvn_fstep.h) and presents follow the hold k it decides with it
 __attribute__((weak)) uint8_t *dm_fps_state;   // loader.c; graphics unit tests have no loader
 __attribute__((weak)) void dm_fps_lock_tick(void) {}   // hle_fpslock.c: engine frame limits in game memory (Monster Hunter Rise); graphics unit tests have no host
+__attribute__((weak)) int dm_fps_lock_target(void) { const char *e = getenv("DM_FPS_TARGET"); int t = e ? atoi(e) : DM_GAME_FPS_TARGET; return t == 30 || t == 60 ? t : 0; }   // with no host: the profile's target, as before
 __attribute__((weak)) void dm_ue_cvar_tick(void) {}   // hle_uecvar.c: Unreal's texture streaming pool (profile ue_texture_pool)
 __attribute__((weak)) int dm_movie_playing(void) { return 0; }   // hle_movie.c: a movie's pictures are being handed out; graphics unit tests have no movie decoder
 // Thermal cap (iOS): while the device is thermally serious or worse (NSProcessInfo thermalState >= 2) the frame step holds 30 fps, and it goes back to the cap after the device
@@ -1647,13 +1648,12 @@ static int fps_step_cap(void) {
 static int fstep_on(void) { return fps_step_cap() != 0; }   // the host decides the steps in whole vsyncs
 // Engine-native frame limiters have no frame-step state page. Their requested
 // cap still governs presentation, even when the profile uses display pacing.
+// Only a limit the host found and set does (dm_fps_lock_target): with neither, as in a build the profile was not brought up on, frames follow the game's own present interval.
+// Until the first present has looked (-1), the game's interval too
 static int g_present_cap = -1;
 static int fps_present_cap(void) {
     if (dm_fps_state) return fps_step_cap();
-    if (g_present_cap < 0) {
-        const char *e=getenv("DM_FPS_TARGET");int t=e?atoi(e):DM_GAME_FPS_TARGET;
-        g_present_cap=t==30||t==60?t:0;
-    }
+    if (g_present_cap < 0) { int t = dm_fps_lock_target(); if (t < 0) return 0; g_present_cap = t; }
     return g_present_cap;
 }
 static nvn_fstep g_fs;   // present thread only
@@ -1810,8 +1810,28 @@ static const int *present_crop(const int win[4], int tw, int th, int lc[4]) {
     }
     return lc;
 }
+// DM_STALL_DUMP=<ms>: when no frame has been presented for that long, every guest thread's state, wait and stack is logged (svc_thread_dump), at most 4 times a run: what a
+// seconds-long frame waits on (Tears of the Kingdom on the Apple TV after a movie: its loading threads at a fifth of a core each, the GPU idle, no paging)
+static _Atomic uint64_t g_present_ns;
+static void *stall_watch(void *arg) {
+    uint64_t ms = (uint64_t)(uintptr_t)arg, dumped = 0; int n = 0; void svc_thread_dump(void);
+    while (n < 4) {
+        usleep(100000);
+        uint64_t last = atomic_load(&g_present_ns), now = now_ns();
+        if (!last || last == dumped || now - last < ms * 1000000ull) continue;
+        LOG("[stall] no frame presented for %llu ms (dump %d of 4)", (unsigned long long)((now - last) / 1000000ull), n + 1);
+        svc_thread_dump(); dumped = last; n++;
+    }
+    return NULL;
+}
+static void stall_watch_start(void) {
+    static int started; if (started) return; started = 1;
+    const char *e = getenv("DM_STALL_DUMP"); int ms = e ? atoi(e) : 0;
+    if (ms > 0) { pthread_t th; if (!pthread_create(&th, NULL, stall_watch, (void *)(uintptr_t)ms)) pthread_detach(th); LOG("[stall] thread dump after %d ms without a present (DM_STALL_DUMP)", ms); }
+}
 NVN(nvnQueuePresentTexture, void, NVNqueue *q, NVNwindow *w, int idx) {
     (void)q; win_t *o = (win_t *)w; o->presents++;
+    atomic_store(&g_present_ns, now_ns()); stall_watch_start();
     dm_fps_lock_tick(); dm_ue_cvar_tick();
     if (dm_fps_state) __atomic_store_n((uint32_t *)(dm_fps_state + 4), (uint32_t)dm_movie_playing(), __ATOMIC_RELAXED);   // the stubs' copy of the movie state (hle.h)
     int c = fps_step_cap();
