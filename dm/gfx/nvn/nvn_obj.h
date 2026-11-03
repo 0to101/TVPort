@@ -148,6 +148,10 @@ typedef struct { int32_t stage, first, n, defer; uint64_t src; uint64_t h[32]; }
 // sampler ID << 20, all a patch writes); tbase / sbase are the numbering bases of the descriptor pools the command buffer had bound (hle_nvn.c bind_handles), added when it is read.
 // Read it with bind_rec, which gives a p_bind_handles
 typedef struct { int32_t stage, slot; uint64_t h; int32_t tbase, sbase; } p_bind_tex1;
+// The pin of a bind's sampler (nvn_mtl.m, "Samplers as a bind recorded them") is in the top 16 bits of its handle. p_bind_tex1.h also keeps the sampler ID it was taken for in bits 32-47: a patch writes
+// only the low word, and a pin that no longer matches its handle does not apply
+#define BIND_PIN(h) ((uint64_t)(h) >> 48)
+#define BIND_HANDLE_MASK ((1ull << 48) - 1)
 static inline const p_bind_handles *bind_rec(uint32_t op, const void *a, p_bind_handles *t) {
     if (op != OP_BIND_TEX1) return a;
     const p_bind_tex1 *b = a; uint64_t tid = b->h & 0xfffff, sid = (uint32_t)b->h >> 20;

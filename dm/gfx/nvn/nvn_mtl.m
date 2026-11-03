@@ -784,12 +784,13 @@ static int tbdr_on(void);
 static void treg_finish_submission(void);
 
 static uint64_t g_sub_serial;   // Submission index (used by the parallel precompile's 'predict only once per submission')
+static void spin_sub_begin(void);
 // The first submission: the prepare step (warm_start), before anything of it is encoded. No GPU work: the submit entry (hle_nvn.c) calls it outside the graphics gate
 void mtl_prepare(void) {
     if (!g_warm_started && prepare_on()) { mtl_init(); shmap_load(); }
 }
 void mtl_sub_begin(void) {
-    mtl_init(); g_sub_serial++; g_seg = 0; seg_clk_put(g_sclk); g_sclk = NULL; g_rc_npend = 0; g_rc_skip = 0;
+    mtl_init(); g_sub_serial++; spin_sub_begin(); g_seg = 0; seg_clk_put(g_sclk); g_sclk = NULL; g_rc_npend = 0; g_rc_skip = 0;
     defer_drain();
     defer_reset();
     mtl_prepare();   // done by then in the submit entry; the replay tool (nvn_replay) reaches it here
@@ -4432,6 +4433,25 @@ void mtl_reg_image(int tid, const tex_t *t, const view_t *v) {
     tex_t image = *t; image.d.flags |= NVN_TEXTURE_FLAGS_IMAGE;
     mtl_reg_tex(tid, &image, v);
 }
+// ---------- Samplers as a bind recorded them ----------
+// A sampler ID names a slot of the pool, and a game may register something else in the slot before the draws recorded with it replay. Super Mario Odyssey's bloom draws a chain of downsamples with one
+// view of the whole mip chain and picks each source level through the sampler's LOD clamp; its render thread takes those samplers from slots it reuses within the frame, about 14 ms before the submit.
+// The replay then read the later sampler, the draw sampled the level it renders to (last frame's finished bloom), and bright areas flashed white for a frame. So every distinct sampler gets a pin that
+// never changes, a slot knows the pin of what it holds, and a bind records that pin with its handle. Only the first execution uses it, for that submission (bind_pin_clear, spin_sub_begin): a command
+// block submitted again, or a binding that carries over, reads the slot, for engines that re-register a slot under recorded commands. DM_NVN_SAMP_PIN=0 reads the slot at replay, as before. A capture stays
+// pinless: its records must replay elsewhere
+#define SPIN_MAX 4096
+typedef struct { samp_par p; void *s, *w; uint64_t rid, rid_w; float bk[4]; } samp_pin;
+static samp_pin g_spin[SPIN_MAX]; static int g_nspin = 1, g_spin_tab[SPIN_MAX * 2];
+static _Atomic int32_t g_spin_of[1 << 16];   // sampler ID → the pin of what the slot holds now, read by recording threads without g_rmu
+static int spin_on(void) { static int v = -1; if (v < 0) { const char *e = getenv("DM_NVN_SAMP_PIN"); v = !(e && !strcmp(e, "0")) && !getenv("DM_NVN_CAPTURE"); } return v; }
+static int spin_intern(const samp_par *sp) {   // Caller holds g_rmu. 0: table full, the bind reads the slot
+    uint32_t h = 2166136261u; const uint8_t *b = (const uint8_t *)sp; for (size_t i = 0; i < sizeof *sp; i++) h = (h ^ b[i]) * 16777619u;
+    for (uint32_t i = h % (SPIN_MAX * 2);; i = (i + 1) % (SPIN_MAX * 2)) { int e = g_spin_tab[i];
+        if (!e) { if (g_nspin >= SPIN_MAX) return 0; g_spin[g_nspin].p = *sp; g_spin_tab[i] = g_nspin; return g_nspin++; }
+        if (!memcmp(&g_spin[e].p, sp, sizeof *sp)) return e; }
+}
+uint64_t mtl_samp_pin(uint64_t sid) { return sid && sid < (1u << 16) ? (uint64_t)atomic_load_explicit(&g_spin_of[sid], memory_order_relaxed) : 0; }
 void mtl_reg_samp(int sid, const samp_par *sp) {
     int id_ = sid; if (id_ < 0) return;
     os_unfair_lock_lock(&g_rmu);
@@ -4443,6 +4463,7 @@ void mtl_reg_samp(int sid, const samp_par *sp) {
     if (g_sview_w[id_]) { CFRelease(g_sview_w[id_]); g_sview_w[id_] = NULL; g_srid_w[id_] = 0; }
     g_reg_gen++;
     g_sreg[id_] = *sp; g_sreg_ok[id_] = 1;
+    if (id_ < (1 << 16) && spin_on()) atomic_store_explicit(&g_spin_of[id_], spin_intern(sp), memory_order_relaxed);
     os_unfair_lock_unlock(&g_rmu);
 }
 // Handles of deferred binds (BindTexturesDeferred) are read at execution: the record keeps the address of the handles (see hle_nvn.c); every reader of a bind record refreshes it first. Command memory is writable, so it is updated in place
@@ -4692,10 +4713,7 @@ static MTLSamplerAddressMode wrapm(int w) {
         case 6: return MTLSamplerAddressModeMirrorRepeat; }
     return MTLSamplerAddressModeRepeat;
 }
-static id<MTLSamplerState> samp_by_id(int sid) {   // Caller holds g_rmu
-    if (sid < 0 || sid >= g_nsreg || !g_sreg_ok[sid]) { RED_ONCE(12, "sampler ID %d not registered", sid); return nil; }
-    if (g_sview[sid]) return (__bridge id<MTLSamplerState>)g_sview[sid];
-    samp_par p = g_sreg[sid];
+static id<MTLSamplerState> samp_make(samp_par p, void **view, uint64_t *rid, void **view_w, uint64_t *rid_w, float *bk, int sid) {
     MTLSamplerDescriptor *d = [MTLSamplerDescriptor new];
     d.magFilter = p.magf ? MTLSamplerMinMagFilterLinear : MTLSamplerMinMagFilterNearest;
     d.minFilter = (p.minf == 1 || p.minf == 3 || p.minf == 5) ? MTLSamplerMinMagFilterLinear : MTLSamplerMinMagFilterNearest;
@@ -4718,17 +4736,27 @@ static id<MTLSamplerState> samp_by_id(int sid) {   // Caller holds g_rmu
     d.borderColor = (MTLSamplerBorderColor)bn;
     d.supportArgumentBuffers = YES;
     id<MTLSamplerState> s = [g_dev newSamplerStateWithDescriptor:d];
-    if (s) { g_sview[sid] = (void *)CFBridgingRetain(s); g_srid[sid] = s.gpuResourceID._impl; }
+    if (s) { *view = (void *)CFBridgingRetain(s); *rid = s.gpuResourceID._impl; }
     if (s && twin) {
         d.borderColor = (MTLSamplerBorderColor)bw; id<MTLSamplerState> t = [g_dev newSamplerStateWithDescriptor:d];
-        if (t) { g_sview_w[sid] = (void *)CFBridgingRetain(t); g_srid_w[sid] = t.gpuResourceID._impl; memcpy(g_sbk[sid], k, sizeof k); }
+        if (t) { *view_w = (void *)CFBridgingRetain(t); *rid_w = t.gpuResourceID._impl; memcpy(bk, k, sizeof k); }
         static int nlog; if (nlog++ < 16) MLOG("sampler ID %d: border colour %g,%g,%g,%g, which Metal lacks: Metal colour %d, corrected in the shaders through a twin of colour %d", sid, p.border[0], p.border[1], p.border[2], p.border[3], bn, bw);
     }
     return s;
 }
+static id<MTLSamplerState> samp_by_id(int sid) {   // Caller holds g_rmu
+    if (sid < 0 || sid >= g_nsreg || !g_sreg_ok[sid]) { RED_ONCE(12, "sampler ID %d not registered", sid); return nil; }
+    if (g_sview[sid]) return (__bridge id<MTLSamplerState>)g_sview[sid];
+    return samp_make(g_sreg[sid], &g_sview[sid], &g_srid[sid], &g_sview_w[sid], &g_srid_w[sid], g_sbk[sid], sid);
+}
 static inline __attribute__((always_inline)) void *samp_fast(int sid) {
     if (sid > 0 && sid < g_nsreg && g_sreg_ok[sid] && g_sview[sid]) return g_sview[sid];
     return (__bridge void *)samp_by_id(sid);
+}
+static samp_pin *spin_get(int pin) {   // Caller holds g_rmu. NULL: the bind has no pin, it reads the slot
+    if (pin <= 0 || pin >= g_nspin) return NULL;
+    samp_pin *e = &g_spin[pin]; if (!e->s) samp_make(e->p, &e->s, &e->rid, &e->w, &e->rid_w, e->bk, 0);
+    return e->s ? e : NULL;
 }
 
 // ---------- Argument buffer blocks: one block per submission, reclaimed after the GPU completes ----------
@@ -4779,6 +4807,7 @@ static struct {
     NVNbufferRange vbuf[16];
     p_bind_buf ubo[6][16], ssbo[6][16];
     uint64_t tex[6][NTEX], samp[6][128], img[6][32];
+    uint16_t pin_t[6][NTEX], pin_s[6][128];   // the pin each tex / samp slot's bind recorded (see "Samplers as a bind recorded them"), 0 to read the sampler ID
     uint32_t st_vmask[2], st_wmask[2], st_ref[2];
     p_poly_offset po; float vp[16][4]; float dr[2]; int has_vp; int depth_clamp; uint8_t vp_sw[16][4];   // vp_sw: viewport swizzles XOR the identity (p_vp_swizzle)
     float blend_color[4], alpha_ref; int64_t copy_stride, copy_img_stride;   // alpha_ref: SetAlphaRef (at_bind)
@@ -7085,6 +7114,11 @@ static __unsafe_unretained id<MTLTexture> g_fb_src[4]; static __strong id<MTLTex
 static uint8_t g_args_dirty[6] = {1, 1, 1, 1, 1, 1};
 static uint64_t g_args_reg_seen, g_args_dirty_seen, g_args_ser_seen;
 static inline void args_dirty_all(void) { memset(g_args_dirty, 1, sizeof g_args_dirty); }
+// A pin lasts for the submission of its bind: a binding that carries over into the next one reads the slot, like a bind that is submitted again
+static void spin_sub_begin(void) {
+    static const typeof(S.pin_t) zt; static const typeof(S.pin_s) zs;
+    if (memcmp(S.pin_t, zt, sizeof zt) || memcmp(S.pin_s, zs, sizeof zs)) { memset(S.pin_t, 0, sizeof zt); memset(S.pin_s, 0, sizeof zs); args_dirty_all(); }
+}
 // A reused block holds resource IDs: it is stale after a registration change, a guest write, or a serial's Metal object replaced (g_ser_gen: an upgraded or re-uploaded packaged texture,
 // an alias taken or evicted) with the same program and bindings (MacNativeGames e49aa55)
 static inline void args_sync_dirty(void) {
@@ -7226,13 +7260,16 @@ static int encode_args_(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, i
         } else if (b->kind == NVN_RB_SAMP || b->kind == NVN_RB_SAMPT || b->kind == NVN_RB_SAMPU || b->kind == NVN_RB_SAMPI) {   // SAMPT: the sampler part of a combined handle (texture ID | sampler ID << 20); SAMPU: the same, with the handle in a uniform buffer
             int sid = b->kind == NVN_RB_SAMPU ? ubo_samp_id(ubo_handle(nvn_stage, reg, b->off)) :
                       b->kind == NVN_RB_SAMPI ? (int)reg : b->kind == NVN_RB_SAMPT ? (reg < NTEX ? (int)(S.tex[nvn_stage][reg] >> 20) : 0) : reg < 128 ? (int)(S.samp[nvn_stage][reg] >> 20) : 0;   // SAMPI: a sampler ID the shader names as a constant
-            __unsafe_unretained id<MTLSamplerState> ss = sid ? (__bridge id<MTLSamplerState>)samp_fast(sid) : nil;
-            if (b->bw && ss && g_sview_w[sid]) {   // a twin (dmsh_build.py border_emu) of a sampler whose border colour Metal lacks: the shader corrects its samples
+            samp_pin *pn = spin_get(b->kind == NVN_RB_SAMPT && reg < NTEX ? S.pin_t[nvn_stage][reg] : b->kind == NVN_RB_SAMP && reg < 128 ? S.pin_s[nvn_stage][reg] : 0);
+            __unsafe_unretained id<MTLSamplerState> ss = pn ? (__bridge id<MTLSamplerState>)pn->s : sid ? (__bridge id<MTLSamplerState>)samp_fast(sid) : nil;
+            if (pn && b->bw && pn->w) { ss = (__bridge id<MTLSamplerState>)pn->w; slots[aid] = pn->rid_w; bmask |= 1u << (b->bw - 1); memcpy(bk[b->bw - 1], pn->bk, sizeof bk[0]); }
+            else if (pn) slots[aid] = pn->rid;
+            else if (b->bw && ss && g_sview_w[sid]) {   // a twin (dmsh_build.py border_emu) of a sampler whose border colour Metal lacks: the shader corrects its samples
                 ss = (__bridge id<MTLSamplerState>)g_sview_w[sid]; slots[aid] = g_srid_w[sid];
                 bmask |= 1u << (b->bw - 1); memcpy(bk[b->bw - 1], g_sbk[sid], sizeof bk[0]);
             } else slots[aid] = sid && sid < g_nsreg && g_srid[sid] ? g_srid[sid] : dummy_samp_rid();   // a twin of any other sampler is never sampled
             USE(ss ? ss : dummy_samp(), MTLResourceUsageRead);
-            if (bl && sid > 0) { int ok = sid < g_nsreg && g_sreg_ok[sid]; samp_par sp = ok ? g_sreg[sid] : (samp_par){0};   // g_rmu is already held in this section
+            if (bl && sid > 0) { int ok = pn || (sid < g_nsreg && g_sreg_ok[sid]); samp_par sp = pn ? pn->p : ok ? g_sreg[sid] : (samp_par){0};   // g_rmu is already held in this section
                 if (ok) PD("B %llu st%d samp reg%d sid=%d mag=%d min=%d (0 nearest / 1 linear; 2–5 with mips) wrap=%d,%d,%d border=%g,%g,%g,%g lod=%g..%g bias=%g aniso=%g cmp=%d/%d %s", g_stat_pass, nvn_stage, reg, sid, (int)sp.magf, (int)sp.minf,
                            (int)sp.ws, (int)sp.wt, (int)sp.wr, sp.border[0], sp.border[1], sp.border[2], sp.border[3], sp.lod_min, sp.lod_max, sp.lod_bias, sp.aniso, (int)sp.cmp_mode, (int)sp.cmp_func, ss ? "real" : "failed"); }
         } else if (b->kind == NVN_RB_TEX || b->kind == NVN_RB_TEXU) {
@@ -7326,10 +7363,11 @@ static int encode_args_(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, i
             }
         } else if (b->kind == NVN_RB_SAMPD) {   // its samplers: element k = the separate sampler in slot k, else the sampler of a combined handle in texture slot k
             for (int k = 0; k < b->n; k++) {
-                int sid = k < 128 ? (int)(S.samp[nvn_stage][k] >> 20) : 0;
-                if (!sid && k < NTEX) sid = (int)(S.tex[nvn_stage][k] >> 20);
-                __unsafe_unretained id<MTLSamplerState> ss = sid ? (__bridge id<MTLSamplerState>)samp_fast(sid) : nil;
-                slots[aid + k] = sid && sid < g_nsreg && g_srid[sid] ? g_srid[sid] : dummy_samp_rid();
+                int sid = k < 128 ? (int)(S.samp[nvn_stage][k] >> 20) : 0, pin = k < 128 ? S.pin_s[nvn_stage][k] : 0;
+                if (!sid && k < NTEX) { sid = (int)(S.tex[nvn_stage][k] >> 20); pin = S.pin_t[nvn_stage][k]; }
+                samp_pin *pn = spin_get(pin);
+                __unsafe_unretained id<MTLSamplerState> ss = pn ? (__bridge id<MTLSamplerState>)pn->s : sid ? (__bridge id<MTLSamplerState>)samp_fast(sid) : nil;
+                slots[aid + k] = pn ? pn->rid : sid && sid < g_nsreg && g_srid[sid] ? g_srid[sid] : dummy_samp_rid();
                 USE(ss ? ss : dummy_samp(), MTLResourceUsageRead);
             }
         } else if (b->kind == NVN_RB_SBUFP || b->kind == NVN_RB_UBOP) {   // B: storage buffers / compute-stage uniforms are device pointers; the address is taken by NVN slot
@@ -7633,6 +7671,16 @@ static int first_draw_covers(int i, id<MTLTexture> t, NSUInteger level) {
 }
 
 int nvn_dpool_base(const void *pool, int tex);   // hle_nvn.c: where a descriptor pool's IDs start in the host table
+// A bind's handles as the slots hold them, and the pins they were recorded with (see "Samplers as a bind recorded them"; nvn_obj.h BIND_PIN)
+static inline void bind_unpin(uint32_t op, const void *a, const p_bind_handles *b, uint64_t *hk, uint16_t *pn) {
+    if (op == OP_BIND_TEX1) { uint64_t v = ((const p_bind_tex1 *)a)->h; hk[0] = b->h[0]; pn[0] = (v >> 32 & 0xffff) == (uint32_t)v >> 20 ? (uint16_t)BIND_PIN(v) : 0; return; }
+    for (int k = 0; k < b->n; k++) { hk[k] = b->defer ? b->h[k] : b->h[k] & BIND_HANDLE_MASK; pn[k] = b->defer ? 0 : (uint16_t)BIND_PIN(b->h[k]); }
+}
+// The bind has run for real (the lookaheads only pass through state_op): from now on it reads the slot. Command memory is writable, as for bh_fresh
+static inline void bind_pin_clear(uint32_t op, const void *a) {
+    if (op == OP_BIND_TEX1) { p_bind_tex1 *t = (p_bind_tex1 *)a; if (BIND_PIN(t->h)) t->h = (uint32_t)t->h; return; }
+    p_bind_handles *b = (p_bind_handles *)a; if (!b->defer) for (int k = 0; k < b->n && k < 32; k++) b->h[k] &= BIND_HANDLE_MASK;
+}
 static int state_op(uint32_t op, const void *a) {
     switch (op) {
         case OP_SCISSOR: R.sc = *(const p_scissor *)a; R.has_sc = 1; break;
@@ -7673,10 +7721,18 @@ static int state_op(uint32_t op, const void *a) {
                     MLOG("[RED] bind record at %p (pass %llu) holds count %d: overwritten after recording; bytes from -0x20: %s", a, g_stat_pass + 1, b->n, hx); }
                 break; }
             bh_fresh(b);
-            if (passdump()) for (int k = 0; k < b->n; k++) { int tid = (int)(b->h[k] & 0xfffff); if (tid) PD("T %llu bind st%d slot%d tid=%d sid=%d ser=%llu%s", g_stat_pass + 1, b->stage, b->first + k, tid, (int)(b->h[k] >> 20),
+            uint64_t hk[32]; uint16_t pn[32]; bind_unpin(op, a, b, hk, pn);
+            if (passdump()) for (int k = 0; k < b->n; k++) { int tid = (int)(hk[k] & 0xfffff); if (tid) PD("T %llu bind st%d slot%d tid=%d sid=%d ser=%llu%s", g_stat_pass + 1, b->stage, b->first + k, tid, (int)(hk[k] >> 20),
                 tid < g_ntreg ? g_treg[tid].t.serial : 0ull, b->defer ? " deferred" : ""); }
-            if (b->stage < 6 && b->first + b->n <= NTEX && memcmp(&S.tex[b->stage][b->first], b->h, 8 * b->n)) { memcpy(&S.tex[b->stage][b->first], b->h, 8 * b->n); g_args_dirty[b->stage] = 1; } break; }
-        case OP_BIND_SAMP: { const p_bind_handles *b = a; bh_fresh(b); if (b->stage < 6 && b->first + b->n <= 128 && memcmp(&S.samp[b->stage][b->first], b->h, 8 * b->n)) { memcpy(&S.samp[b->stage][b->first], b->h, 8 * b->n); g_args_dirty[b->stage] = 1; } break; }
+            if (b->stage < 6 && b->first + b->n <= NTEX) {
+                if (memcmp(&S.tex[b->stage][b->first], hk, 8 * b->n)) { memcpy(&S.tex[b->stage][b->first], hk, 8 * b->n); g_args_dirty[b->stage] = 1; }
+                if (memcmp(&S.pin_t[b->stage][b->first], pn, 2 * b->n)) { memcpy(&S.pin_t[b->stage][b->first], pn, 2 * b->n); g_args_dirty[b->stage] = 1; } }
+            break; }
+        case OP_BIND_SAMP: { const p_bind_handles *b = a; bh_fresh(b); uint64_t hk[32]; uint16_t pn[32]; bind_unpin(op, a, b, hk, pn);
+            if (b->stage < 6 && b->first + b->n <= 128) {
+                if (memcmp(&S.samp[b->stage][b->first], hk, 8 * b->n)) { memcpy(&S.samp[b->stage][b->first], hk, 8 * b->n); g_args_dirty[b->stage] = 1; }
+                if (memcmp(&S.pin_s[b->stage][b->first], pn, 2 * b->n)) { memcpy(&S.pin_s[b->stage][b->first], pn, 2 * b->n); g_args_dirty[b->stage] = 1; } }
+            break; }
         case OP_BIND_IMG: { const p_bind_handles *b = a; bh_fresh(b); if (b->stage < 6 && b->first >= 0 && b->first + b->n <= 32) { if (memcmp(&S.img[b->stage][b->first], b->h, 8 * b->n)) { memcpy(&S.img[b->stage][b->first], b->h, 8 * b->n); g_args_dirty[b->stage] = 1; } } else RED_ONCE(31, "image slots out of range stage %d first %d count %d", b->stage, b->first, b->n); break; }
         case OP_STENCIL: {
             const p_stencil *b = a;
@@ -8864,7 +8920,9 @@ static int kd_draw(NvProg *pr, const p_draw *dw, const p_draw_idx *di) {
 // the non-finite pixel count and each channel's min / max. An attachment with a block holding one single magenta value throughout (exactly what the squares in the iPhone screenshot are, aligned to the 16-pixel grid) or with non-finite values gets a [mag] line (index of the pass within the frame, distance from the pass holding this particle, attachment serial / format / size, block position and value).
 // Four phases rotate: phase 0 draws as usual, phase 1 drops every draw of this fragment shader, phases 2 / 3 keep the geometry and replace the fragment output with a constant (grey / bright magenta). Comparing the phases tells whether this draw causes it
 // and whether its fragment output (texture reads, value range) matters; the first pass where the magenta blocks show tells which step goes wrong
-static char g_ms_key[24]; static int g_ms_every, g_ms_plen, g_ms_init;
+// DM_NVN_MAGSCAN_TSV=<path>: also writes one row per scanned attachment (frame, pass, serial, size, brightest channel, mean of the blocks' brightest channels, block of the peak, last fragment shader of the pass) and scans float formats and small targets too.
+// Non-finite counts miss a pixel that is huge but finite; comparing a flash frame with its neighbours pass by pass names the first pass that differs
+static char g_ms_key[24]; static int g_ms_every, g_ms_plen, g_ms_init; static FILE *g_ms_tsv; static char g_ms_fs[17];
 static int ms_on(void);
 static const char *const k_ms_phase[4] = {"normal", "shader dropped", "shader outputs constant gray", "shader outputs constant bright magenta"};
 static int ms_phase_now(void) { return (int)(atomic_load(&g_cur_frame) / (uint64_t)g_ms_plen % 4); }
@@ -8884,12 +8942,15 @@ static int ms_on(void) {
         if (e && *e) { size_t n = strcspn(e, ":"); if (n > 23) n = 23; memcpy(g_ms_key, e, n); g_ms_key[n] = 0;
             const char *c = strchr(e, ':'); g_ms_every = c ? atoi(c + 1) : 30; c = c ? strchr(c + 1, ':') : NULL; g_ms_plen = c ? atoi(c + 1) : 600;
             if (g_ms_every < 1) g_ms_every = 30; if (g_ms_plen < g_ms_every) g_ms_plen = 600;
-            MLOG("DM_NVN_MAGSCAN: fragment shader %s; every %d frames, scans each pass's color attachments for magenta blocks; every %d frames, switches phase (0 normal / 1 drop this shader's draws / 2 it outputs constant gray / 3 it outputs constant bright magenta) ([mag] lines)", g_ms_key, g_ms_every, g_ms_plen); } }
+            MLOG("DM_NVN_MAGSCAN: fragment shader %s; every %d frames, scans each pass's color attachments for magenta blocks; every %d frames, switches phase (0 normal / 1 drop this shader's draws / 2 it outputs constant gray / 3 it outputs constant bright magenta) ([mag] lines)", g_ms_key, g_ms_every, g_ms_plen);
+            const char *tsv = getenv("DM_NVN_MAGSCAN_TSV");
+            if (tsv && *tsv) { char path[1024]; if (tsv[0] == '~') { snprintf(path, sizeof path, "%s%s", getenv("HOME"), tsv + 1); tsv = path; } g_ms_tsv = fopen(tsv, "w"); if (g_ms_tsv) fputs("frame\tpass\tattachment\tserial\tformat\twidth\theight\tpeak\tmean\tblock x\tblock y\tnon-finite\tshader\n", g_ms_tsv); else MLOG("[RED] DM_NVN_MAGSCAN_TSV: cannot open %s (errno %d)", tsv, errno); } } }
     return g_ms_key[0] != 0;
 }
 static uint64_t g_ms_ppass = ~0ull, g_ms_pframe = ~0ull, g_ms_drawn, g_ms_dropped;
 // returns 1 = this phase drops the draw
 static int ms_draw(NvProg *pr) {
+    if (ms_on() && g_ms_tsv && pr->sh[1]) snprintf(g_ms_fs, sizeof g_ms_fs, "%s", pr->sh[1]->key);
     if (!ms_on() || !pr->sh[1] || strncmp(pr->sh[1]->key, g_ms_key, strlen(g_ms_key))) return 0;   // a deferred draw returns before this when recorded and only arrives here when replayed: every draw passes exactly once
     uint64_t f = atomic_load(&g_cur_frame);
     if (f / (uint64_t)g_ms_plen % 4 == 1) { g_ms_dropped++; return 1; }
@@ -8910,8 +8971,8 @@ static const char k_ms_msl[] =
 "  for (int s = 1; s < 8; s++) { v[0] += sh[s][0]; v[1] += sh[s][1]; for (int k = 2; k < 8; k += 2) { v[k] = min(v[k], sh[s][k]); v[k + 1] = max(v[k + 1], sh[s][k + 1]); } }\n"
 "  device uint *q = o + 4 + 4 * (tg.y * o[2] + tg.x); q[0] = v[0] | v[1] << 16 | (v[2] == v[3] && v[4] == v[5] && v[6] == v[7] ? 1u << 31 : 0u); q[1] = v[3]; q[2] = v[5]; q[3] = v[7]; }\n";
 #define MS_BUF (16u << 20)
-#define MS_MAXE 256
-typedef struct { uint64_t pass_idx, ser; int att, pdist, fmt; uint32_t w, h, off; } ms_ent;
+#define MS_MAXE 1024
+typedef struct { uint64_t pass_idx, ser; int att, pdist, fmt; uint32_t w, h, off; char fs[17]; } ms_ent;
 typedef struct { __strong id<MTLBuffer> b; uint64_t frame, fence; uint32_t used; int n, busy, full; ms_ent e[MS_MAXE]; } ms_scan;
 static ms_scan g_ms_s[2]; static int g_ms_cur = -1;   // which buffer this scan frame writes (-1 = not scanning this frame)
 static uint64_t g_ms_curf = ~0ull, g_ms_first;
@@ -8927,8 +8988,9 @@ static void ms_poll(void) {
             g_ms_seq = seq; g_ms_sc = g_ms_hitf = g_ms_maxblk = g_ms_pscan = 0; g_ms_pmag = 0; g_ms_f0 = s->frame; }
         g_ms_sc++; g_ms_f1 = s->frame; int fblk = 0, pseen = 0;
         for (int i = 0; i < s->n; i++) { const ms_ent *e = &s->e[i]; const uint32_t *o = (const uint32_t *)((const uint8_t *)s->b.contents + e->off);
-            uint32_t tw = (e->w + 15) / 16, th = (e->h + 15) / 16; uint64_t bad = 0, mag = 0; int ublk = 0, mblk = 0, nl = 0; char line[1400]; size_t lo = 0;
+            uint32_t tw = (e->w + 15) / 16, th = (e->h + 15) / 16, pk = 0; uint64_t bad = 0, mag = 0; int ublk = 0, mblk = 0, nl = 0; char line[1400]; size_t lo = 0; float peak = 0; double msum = 0;
             for (uint32_t t = 0; t < tw * th; t++) { const uint32_t *q = o + 4 + 4 * t; uint32_t nmag = q[0] & 0xffff, nbad = q[0] >> 16 & 0x7fff; bad += nbad; mag += nmag;
+                float mx[3]; memcpy(mx, &q[1], 12); float bm = MAX(mx[0], MAX(mx[1], mx[2])); msum += bm; if (bm > peak) { peak = bm; pk = t; }
                 uint32_t npx = MIN(16u, e->w - t % tw * 16) * MIN(16u, e->h - t / tw * 16);
                 int uni = q[0] >> 31;   // the whole block holds one value
                 int allm = nmag == npx;
@@ -8936,10 +8998,12 @@ static void ms_poll(void) {
                 if (((allm && uni && npx >= 64) || nbad) && nl < 8 && lo < sizeof line - 120) { float r, g, b; memcpy(&r, &q[1], 4); memcpy(&g, &q[2], 4); memcpy(&b, &q[3], 4); nl++;
                     lo += snprintf(line + lo, sizeof line - lo, " [%u,%u%s max %g %g %g non-finite %u]", t % tw * 16, t / tw * 16, uni ? " uniform" : "", r, g, b, nbad); } }
             fblk += ublk; if (e->pdist == 0 && e->att == 0) { g_ms_pmag += mag; pseen = 1; }
+            if (g_ms_tsv) fprintf(g_ms_tsv, "%llu\t%llu\t%d\t%llu\t%d\t%u\t%u\t%g\t%.4f\t%u\t%u\t%llu\t%s\n", (unsigned long long)s->frame, (unsigned long long)e->pass_idx, e->att, (unsigned long long)e->ser, e->fmt, e->w, e->h, peak, msum / (tw * th), pk % tw, pk / tw, (unsigned long long)bad, e->fs);
             if (ublk || bad) MLOG("[mag] F%llu phase %llu pass %llu (shader's pass %+d) attachment %d ser=%llu format %d %ux%u: uniform magenta blocks %d (all-magenta blocks %d), non-finite pixels %llu%s", (unsigned long long)s->frame, (unsigned long long)(s->frame / (uint64_t)g_ms_plen % 4),
                                   (unsigned long long)e->pass_idx, e->pdist, e->att, (unsigned long long)e->ser, e->fmt, e->w, e->h, ublk, mblk, (unsigned long long)bad, line);
         }
         if (fblk) g_ms_hitf++; if (fblk > g_ms_maxblk) g_ms_maxblk = fblk; g_ms_pscan += pseen;
+        if (g_ms_tsv) fflush(g_ms_tsv);
         if (s->full) MLOG("[mag] F%llu scan buffer full; the remaining passes of this frame were not scanned", (unsigned long long)s->frame);
         s->busy = 0; s->n = 0; s->used = 0; s->full = 0; }
 }
@@ -8972,8 +9036,9 @@ void ms_after(void) {
     for (int i = 0; i < na; i++) { id<MTLTexture> t = g_ms_att[i]; g_ms_att[i] = nil;
         MTLPixelFormat pf = t.pixelFormat;
         int ok = pf == MTLPixelFormatRGBA8Unorm || pf == MTLPixelFormatRGBA8Unorm_sRGB || pf == MTLPixelFormatBGRA8Unorm || pf == MTLPixelFormatBGRA8Unorm_sRGB || pf == MTLPixelFormatRGB10A2Unorm
-              || pf == MTLPixelFormatRG11B10Float || pf == MTLPixelFormatRGBA16Float || pf == MTLPixelFormatRGBA16Unorm || pf == MTLPixelFormatRGBA32Float;
-        if (!ok || !(t.usage & MTLTextureUsageShaderRead) || t.sampleCount > 1 || (t.width >> g_ms_lv[i]) < 64 || t.storageMode == MTLStorageModeMemoryless || (t.textureType != MTLTextureType2D && t.textureType != MTLTextureType2DArray)) continue;
+              || pf == MTLPixelFormatRG11B10Float || pf == MTLPixelFormatRGBA16Float || pf == MTLPixelFormatRGBA16Unorm || pf == MTLPixelFormatRGBA32Float
+              || (g_ms_tsv && (pf == MTLPixelFormatRG16Float || pf == MTLPixelFormatR16Float || pf == MTLPixelFormatR32Float));
+        if (!ok || !(t.usage & MTLTextureUsageShaderRead) || t.sampleCount > 1 || (t.width >> g_ms_lv[i]) < (g_ms_tsv ? 8 : 64) || t.storageMode == MTLStorageModeMemoryless || (t.textureType != MTLTextureType2D && t.textureType != MTLTextureType2DArray)) continue;
         if (pdist == 0 && !logged_att++) MLOG("[mag] attachment %d of the shader's pass: ser=%llu format %lu %lux%lu level %lu layer %lu storage %lu usage %#lx compression type %ld allowGPUOptimizedContents %d", i, (unsigned long long)g_ms_aser[i], (unsigned long)pf,
                                              (unsigned long)t.width, (unsigned long)t.height, (unsigned long)g_ms_lv[i], (unsigned long)g_ms_sl[i], (unsigned long)t.storageMode, (unsigned long)t.usage, (long)t.compressionType, (int)t.allowGPUOptimizedContents);
         uint32_t w = (uint32_t)MAX(t.width >> g_ms_lv[i], 1ul), h = (uint32_t)MAX(t.height >> g_ms_lv[i], 1ul), tw = (w + 15) / 16, th = (h + 15) / 16, need = 16 + tw * th * 16;
@@ -8982,7 +9047,7 @@ void ms_after(void) {
         if (t.textureType != MTLTextureType2D || g_ms_lv[i] || g_ms_sl[i]) v = [t newTextureViewWithPixelFormat:pf textureType:MTLTextureType2D levels:NSMakeRange(g_ms_lv[i], 1) slices:NSMakeRange(g_ms_sl[i], 1)];
         if (!v) continue;
         uint32_t *o = (uint32_t *)((uint8_t *)s->b.contents + s->used); o[0] = w; o[1] = h; o[2] = tw; o[3] = 0;
-        ms_ent *e = &s->e[s->n++]; e->pass_idx = g_stat_pass - g_ms_first; e->ser = g_ms_aser[i]; e->att = i; e->pdist = pdist; e->fmt = (int)pf; e->w = w; e->h = h; e->off = s->used; s->used += need;
+        ms_ent *e = &s->e[s->n++]; e->pass_idx = g_stat_pass - g_ms_first; e->ser = g_ms_aser[i]; e->att = i; e->pdist = pdist; e->fmt = (int)pf; e->w = w; e->h = h; e->off = s->used; s->used += need; snprintf(e->fs, sizeof e->fs, "%s", g_ms_fs);
         if (g_blit) { enc_b_end(g_blit); g_blit = nil; }
         id<MTL4ComputeCommandEncoder> ce = (id<MTL4ComputeCommandEncoder>)enc_c_begin(NULL); [ce setArgumentTable:at];
         [at setTexture:v.gpuResourceID atIndex:0]; [at setAddress:s->b.gpuAddress + e->off atIndex:0];
@@ -10888,8 +10953,9 @@ void mtl_exec(const uint8_t *p) {
                     PD("Y bind_program cmd=%p program=%p stages=%#x vs=%s fs=%s gs=%s",p,(void *)b->prog,b->stages,
                        pr && pr->sh[0] ? pr->sh[0]->key : "-", pr && pr->sh[1] ? pr->sh[1]->key : "-",pr && pr->sh[2] ? pr->sh[2]->key : "-"); }
                 break; }
+            case OP_BIND_TEX: case OP_BIND_TEX1: case OP_BIND_SAMP: state_op(h.op, a); bind_pin_clear(h.op, a); break;
             case OP_SCISSOR: case OP_BIND_STATE: case OP_BIND_VATTR: case OP_BIND_VSTREAM: case OP_BIND_VBUF: case OP_BIND_VBUF1:
-            case OP_BIND_UBO: case OP_BIND_UBO_SMALL: case OP_BIND_SSBO: case OP_BIND_TEX: case OP_BIND_TEX1: case OP_BIND_SAMP: case OP_BIND_IMG: case OP_STENCIL:
+            case OP_BIND_UBO: case OP_BIND_UBO_SMALL: case OP_BIND_SSBO: case OP_BIND_IMG: case OP_STENCIL:
             case OP_POLY_OFFSET: case OP_VIEWPORTS: case OP_DEPTH_RANGE: case OP_DEPTH_CLAMP: case OP_VP_SWIZZLE: case OP_BLEND_COLOR: case OP_ALPHA_REF: case OP_COPY_STRIDE:
                 state_op(h.op, a); break;
             case OP_TF_BIND: { const p_tf_bind *b = a; PD("Y tf bind %d addr=%#llx size=%llu", b->index, (unsigned long long)b->addr, (unsigned long long)b->size); state_op(h.op, a); break; }
