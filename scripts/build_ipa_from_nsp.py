@@ -556,7 +556,7 @@ def extract_flags(app):   # nx_extract's options shared by its extraction calls:
             + (['--allow-damaged'] if ALLOW_DAMAGED else []))
 
 
-def scan_nsps(nsp_dir, from_package=None, contents_of=None, want=None):
+def scan_nsps(nsp_dir, from_package=None, contents_of=None, want=None, extra_packages=()):
     """Group by game: {application title ID: {'base': path, 'updates': [(version, path)], 'dlc': [(title ID, version, path)]}}. An NSZ / XCZ is listed as it is (its ticket names
     the title as an NSP's does) and converted afterwards (decompress_nsz). A package with neither is asked for its title ID: from_package(path) (package_title_reader).
     A merged package (several content metas: base game + update + DLC in one NSP) is asked for its contents, contents_of(path) -> [(type, title ID, version)], and the one file
@@ -571,15 +571,27 @@ def scan_nsps(nsp_dir, from_package=None, contents_of=None, want=None):
         elif low == 0x800: f['updates'].append((version, p))
         else: f['dlc'].append((tid, version, p))
     packages = files_with_suffix(nsp_dir, *PACKAGE_SUFFIXES)   # a base game may be a cartridge dump (.xci: Monster Hunter Rise); nx_extract reads its secure partition
+    extras = {Path(p).expanduser().resolve() for p in extra_packages}
+    for path in sorted(extras):
+        if not path.is_file() or path.suffix.lower() not in PACKAGE_SUFFIXES or path.name.startswith('._'):
+            raise BuildError(f'Update or DLC is unavailable: {path}. Reconnect its drive or remove it from the game.')
+        if path not in packages: packages.append(path)
     for p in packages:
+        if p in extras and (p.stat().st_size == 0 or not is_package(p)):
+            raise BuildError(f'{p.name}: this update or DLC is empty or is not a readable game package.')
         if p.stat().st_size == 0:   # an empty file left by an incomplete download (the Zelda BotW folder holds a 0-byte DLC NSP next to the complete (1).nsp)
             say(f'skipping an empty file: {p.name}'); continue
         if not is_package(p):   # title_of falls back to the name's [title ID]: without this, any file with a game's extension and tag counted as one of its packages
             say(f'skipping {p.name}: neither an NSP (PFS0) nor an XCI (HEAD at 0x100)'); continue
         beside = next((q for q in packages if q.suffix.lower() == COMPRESSED.get(p.suffix.lower()) and q.stem.lower() == p.stem.lower()), None)   # from the listing: `Game.NSP` is beside `Game.nsz` on a case-sensitive volume too
         if beside: say(f'skipping {p.name}: {beside.name} is beside it'); continue
-        if contents_of and is_merged(p):
-            cs = [(t, i, v) for t, i, v in contents_of(p) or () if t in ('Application', 'Patch', 'AddOnContent')]
+        if p in extras or (contents_of and is_merged(p)):
+            cs = [(t, i, v) for t, i, v in (contents_of(p) if contents_of else ()) or () if t in ('Application', 'Patch', 'AddOnContent')]
+            if p in extras:
+                if not cs or any(t == 'Application' for t, _, _ in cs):
+                    raise BuildError(f'{p.name}: expected a verifiable update or DLC package, not a base game.')
+                if want is not None and any((i & ~0xFFF if t == 'Patch' else (i & ~0xFFF) - 0x1000) != want for t, i, _ in cs):
+                    raise BuildError(f'{p.name}: this update or DLC belongs to a different game.')
             if cs:
                 say(f'{p.name} holds several titles: ' + ', '.join(f'{"base game" if t == "Application" else "update" if t == "Patch" else "DLC"} {i:016X} v{v}' for t, i, v in cs))
                 for t, i, v in cs: add(p, i, v if t != 'Application' else None)
@@ -2695,6 +2707,7 @@ def parse_args(argv):
     ap.add_argument('nsp_dir', nargs='?', help='folder holding one game\'s NSPs, or its files as a dump (scripts/pack_dump.py lists the layout), or one NUP container (a .nup file; the file itself may be given) (default: the NSP_DIR setting, else asked)')
     ap.add_argument('-k', '--keys', help='path of prod.keys, not needed for a dump folder or a NUP (default: the PROD_KEYS setting, else asked)')
     ap.add_argument('--title-id', help='the game to pack when the folder holds several (a cartridge dump with two games): its title ID, 16 hex digits (default: the TITLE_ID setting)')
+    ap.add_argument('--extra-package', action='append', default=[], help='update or DLC package in another folder; repeat for multiple files (original files stay in place)')
     ap.add_argument('-p', '--package', help='version packed into the IPA, e.g. v327680 / v0 (default: the newest in the folder)')
     ap.add_argument('-o', '--out', help='output IPA, or app with --platform mac-app (default: <the profile\'s ipa>, or <game name>.app, in the NSP folder)')
     ap.add_argument('--app-name', help='app name on the home screen (default: the game name in the base NSP)')
@@ -2837,6 +2850,7 @@ def main(args=None):
     nup = nup_file(nsp_dir)   # a NUP file given in place of the folder: its folder is the NSP folder (the build folder and the IPA go there)
     if nsp_dir.is_file(): nsp_dir = nsp_dir.parent
     dump = 'nup' if nup else 'folder' if dump_folder(nsp_dir) else None   # their files are not encrypted, so they need no keys
+    if dump and args.extra_package: raise BuildError('--extra-package requires an NSP/XCI base game folder')
     keys = None if dump else Path(os.path.expanduser(args.keys or PROD_KEYS or ask('path of prod.keys: ', 'prod.keys (-k)'))).resolve()
     if keys and not keys.is_file(): raise BuildError(f'no such file: {keys}')
     sys.path.insert(0, str(repo / 'dm/games')); import game as gamemod   # game profiles
@@ -2863,7 +2877,7 @@ def main(args=None):
         say(f'a dump folder: {app:016X}, {len(fam["updates"])} update(s), {len(fam["dlc"])} DLC')
     else:
         with package_title_reader(repo, keys, env) as from_package:
-            app, fam = scan_nsps(nsp_dir, from_package, from_package.contents, int(want, 16) if want else None)
+            app, fam = scan_nsps(nsp_dir, from_package, from_package.contents, int(want, 16) if want else None, args.extra_package)
             from_package.check_keys(fam)
         if PROGRAM_INDEX:   # one program of a multi-program application, packed as a game of its own: its title ID names the profile and the build folder
             app += PROGRAM_INDEX; say(f'program {PROGRAM_INDEX} of the application: title ID {app:016X}')
@@ -3129,6 +3143,7 @@ def main(args=None):
         if separate: say_push_romfs(rfs.source(game), bundle_id)
         say('choose the game scheme in Xcode, select your Team and iPhone or iPad, then Run (Release)')
         report_profile_status(g, reg, pkg_ver, derived, provisional, 'Xcode project', patched)
+        (work / 'prepared-content.json').write_text(json.dumps({'package': pkg_ver, 'dlc': bool(aoc)}, indent=1))
         return
     watch = IpaWatch(repo, work / 'ipa', out_ipa)
     PROG.stage('app build', poll=watch.poll, step='starting')   # build_ipa.sh's "pack IPA" line starts the stage "IPA pack"

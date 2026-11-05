@@ -1,5 +1,13 @@
 # Packing
 
+## TVPort external updates and DLC
+
+- **Symptom:** updates or DLC stored outside the base folder were not selectable, and TVPort's Apple TV project omitted already extracted DLC.
+- **Cause:** package discovery only scanned one directory, and TVPort set `AOC` to an empty string when generating its project.
+- **Fix:** `--extra-package` accepts repeated external package paths, validates their content metadata against the base title, and includes them in extraction. TVPort passes the active `aoc` directory to project generation. A preparation manifest records the selected package and whether DLC is active, preventing old cached updates/DLC from being reused after removal. File signatures trigger preparation when attachments change. Source packages are retained.
+- **Checked:** synthetic metadata, wrong-title rejection, missing external files, attachment removal, selected-package manifest and project environment tests. No new Apple TV DLC gameplay result is claimed.
+- **Front-ends:** pass external packages with `--extra-package`; after `--prepare-xcode`, use `prepared-content.json` to select the active package and DLC state rather than guessing from cached folders.
+
 ## Game packages
 
 ### PFS0 file-name table missing its final NUL
