@@ -30,12 +30,6 @@ LEFT_OUT = ('dm/tools/fuzz/',)   # the fuzzers' inputs: made-up game files, whic
 GAME_SUFFIXES = {'.nsp', '.xci', '.nsz', '.xcz', '.nca', '.ncz', '.tik', '.keys', '.nso', '.nro', '.img', '.ipa', '.ips'}
 GAME_NAMES = {'prod.keys', 'title.keys', 'dev.keys', 'control.nacp', 'main.npdm', 'c1_full.tsv', 'cb_extent.tsv', 'pso_user.tsv', 'tvport-shaders.tsv', 'tvport.json', 'tvport-env.txt'}
 GAME_FOLDERS = re.compile(r'^([0-9A-Fa-f]{16}_build|.*-work|.*\.app|.*\.xcarchive|save-backups|save)$')
-CREDITS = '''<div style="font: 11px -apple-system, sans-serif; text-align: center">
-<p>TVPort runs <a href="https://github.com/seedds/nxnative">nxnative</a>, &copy; 2026 seedds, MIT License, with the third-party code it names in dm/third_party.
-It carries <a href="https://github.com/astral-sh/uv">uv</a> by Astral (MIT or Apache-2.0) to set up its Python.</p>
-<p>The license texts are in TVPort.app/Contents/Resources/Licenses. No games, keys or Nintendo artwork are part of TVPort: it builds only from your own.</p>
-</div>
-'''
 
 
 class Stop(Exception):
@@ -134,7 +128,6 @@ def main() -> int:
                 shutil.copy2(REPO / name, licenses / name)
         for path in uv_licenses:
             shutil.copy2(path, licenses / f'uv-{path.name}.txt')
-        (resources / 'Credits.html').write_text(CREDITS)
         helpers.mkdir()
         shutil.copy2(uv, helpers / 'uv')
         (helpers / 'uv').chmod(0o755)
