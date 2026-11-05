@@ -21,6 +21,7 @@ targets:
         LSApplicationCategoryType: public.app-category.utilities
         TVPortRoot: $(SRCROOT)/../..   # where backend.py and the engine are; the app is not sandboxed because it runs Xcode's tools
     settings:
+      ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
       PRODUCT_BUNDLE_IDENTIFIER: dev.tvport.mac
       SWIFT_VERSION: "5.0"
       CODE_SIGN_IDENTITY: "-"
