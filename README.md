@@ -15,7 +15,7 @@
 
 Existing features and instructions remain below.
 
-Download [TVPort 1.2](https://github.com/0to101/TVPort/releases/tag/v1.2), or keep using [TVPort 1.1](https://github.com/0to101/TVPort/releases/tag/v1.1). Both app downloads remain available. See [the TVPort guide](tvport/README.md) for setup and build instructions.
+Download [TVPort 1.2](https://github.com/0to101/TVPort/releases/tag/v1.2), See [the TVPort guide](tvport/README.md) for setup and build instructions.
 
 ## Features retained from TVPort 1.1
 
