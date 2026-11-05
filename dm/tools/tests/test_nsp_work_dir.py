@@ -61,6 +61,16 @@ class WorkDir(unittest.TestCase):
         self.assertEqual(self.plan('--work-dir', str(out)), (out, out.parent / ipa))
         self.assertEqual(self.nsz_work, out)   # the NSZ conversions are build files too
 
+    def test_build_root_uses_the_real_title_id_for_all_build_outputs(self):
+        root = self.tmp / 'TVPort Builds'
+        work = root / f'{TID:016X}_build'
+        self.assertEqual(self.plan('--build-root', str(root)), (work, root / profile_ipa()))
+        self.assertEqual(self.nsz_work, work)
+
+    def test_build_root_and_explicit_work_dir_cannot_be_combined(self):
+        with self.assertRaises(nsp.BuildError):
+            self.plan('--build-root', str(self.tmp / 'root'), '--work-dir', str(self.tmp / 'work'))
+
     def test_setting_does_the_same(self):
         ipa = profile_ipa()
         out = self.tmp / 'elsewhere'

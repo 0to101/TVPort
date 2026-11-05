@@ -30,6 +30,7 @@ static uint64_t face(NSString *category, char pressed) {
 }
 
 int main(void) { @autoreleasepool {
+    unsetenv("DM_PAD_SWAP_AB_XY");
     for (NSString *k in @[@"Xbox One", @"DualSense", @"HID"]) {   // by position: buttonA bottom (B), buttonB right (A), buttonX left (Y), buttonY top (X)
         assert(face(k, 'A') == DM_BTN_B); assert(face(k, 'B') == DM_BTN_A); assert(face(k, 'X') == DM_BTN_Y); assert(face(k, 'Y') == DM_BTN_X);
     }
@@ -37,6 +38,18 @@ int main(void) { @autoreleasepool {
     for (NSString *k in @[@"Switch Pro Controller", @"Nintendo Switch Joy-Con (L/R)", @"Nintendo Switch Joy-Con (R)"]) {   // by label
         assert(face(k, 'A') == DM_BTN_A); assert(face(k, 'B') == DM_BTN_B); assert(face(k, 'X') == DM_BTN_X); assert(face(k, 'Y') == DM_BTN_Y);
     }
+    setenv("DM_PAD_SWAP_AB_XY", "1", 1);
+    for (NSString *k in @[@"Xbox One", @"DualSense", @"HID"]) {
+        assert(face(k, 'A') == DM_BTN_A); assert(face(k, 'B') == DM_BTN_B); assert(face(k, 'X') == DM_BTN_X); assert(face(k, 'Y') == DM_BTN_Y);
+    }
+    for (NSString *k in @[@"Switch Pro Controller", @"Nintendo Switch Joy-Con (L/R)", @"Nintendo Switch Joy-Con (R)"]) {
+        assert(face(k, 'A') == DM_BTN_B); assert(face(k, 'B') == DM_BTN_A); assert(face(k, 'X') == DM_BTN_Y); assert(face(k, 'Y') == DM_BTN_X);
+    }
+    assert(face(nil, 'A') == DM_BTN_A);
+    setenv("DM_PAD_SWAP_AB_XY", "0", 1);
+    assert(face(@"Xbox One", 'A') == DM_BTN_B);
+    assert(face(@"Switch Pro Controller", 'A') == DM_BTN_A);
+    unsetenv("DM_PAD_SWAP_AB_XY");
     TestPad *g = [TestPad new];   // nothing pressed, buttons nil: none
     assert(dm_pad_face((GCExtendedGamepad *)(id)g) == 0);
     printf("t_pad_apple OK\n");

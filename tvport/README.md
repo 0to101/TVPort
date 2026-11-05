@@ -24,11 +24,15 @@ open tvport/app/build/Build/Products/Release/TVPort.app
 
 That build needs the project folder to stay where it was built, because it runs `tvport/backend.py` from there.
 
-Add a folder holding your game's `.nsp` or `.xci` files, pick your Apple TV, and press **Build & Install**. A first build takes 30 to 60 minutes and needs your `prod.keys`. After that a build takes a few minutes, because the game's rewritten code and shaders are kept in `<title ID>_build` beside the game.
+Add a folder holding your game's `.nsp` or `.xci` files, pick your Apple TV, and press **Build & Install**. A first build takes 30 to 60 minutes and needs your `prod.keys`. After that a build takes a few minutes, because the game's rewritten code and shaders are kept in `<title ID>_build`, beside the game by default.
 
-**Choose Artwork** takes any image. The preview is drawn by the same code as the real icon (`dm/ios/tools/tv_icon.swift`), which also makes the Top Shelf banners.
+**File > Settings…** lets you choose a default build folder. Each game gets its own subfolder there; its original game files stay where they are. A game’s **Build folder** section has two mutually exclusive checkboxes: **Default folder from Settings** and **Next to original files**, with the selected location below. Without a default folder, Next to original files is selected; clicking Default folder from Settings opens Settings so you can choose one. Changing the location copies an existing build, including its local save backups, on the next build and keeps the original. Allow space for both copies. A missing destination drive stops the build instead of creating a replacement folder. **File > Manage Saves** opens the save manager; the setup status icon is beside Manage Saves in the sidebar toolbar.
 
-**Last Run** reads the game's log and the system's memory reports from the Apple TV, and says what went wrong in plain words.
+**Artwork** is fetched automatically from Nintendo’s eShop image servers, using the game’s title ID and the [TitleDB](https://github.com/blawar/titledb) catalog. TVPort can identify the title ID from an existing build or a source filename containing a single base-game title ID. Images are cached in `~/Library/Application Support/TVPort/artwork`. If lookup fails, the game’s extracted icon is used when available. The lookup and product-selection code is adapted from [NX2Apple](https://github.com/LNPANDY/NX2Apple), with its MIT license included in the app.
+
+**Choose Artwork** takes any image and overrides automatic artwork. **Use Automatic Artwork** switches back to the eShop image or game icon. **Framing > Crop to fill** adds 100–300% zoom and horizontal/vertical crop position controls. **Reset Crop** returns to a centered crop, and **Automatic** restores the original framing. Choices are saved per game and applied to the preview and generated Apple TV assets at the next Build & Install. Choosing a different image resets the framing. The preview is drawn by the same code as the real icon (`dm/ios/tools/tv_icon.swift`), which also makes the Top Shelf banners.
+
+**Last Run Stats** reads the game's log and the system's memory reports from the Apple TV, and says what went wrong in plain words.
 
 **3D resolution** appears for a game whose rewritten code has a render-scale stub, the same test the iPhone launcher uses (`# RENDER_SCALE` in the main's fixups; `backend.py` `render_scale_supported`). That is Tears of the Kingdom 1.4.2 and 1.4.3, and Breath of the Wild 1.9.0. Below Full, the build writes `DM_RENDER_SCALE` into the app's `dm/env.txt`, so the game draws its 3D scene at that fraction of its size. The size is then fixed in place of the game's own dynamic resolution, and the menus stay sharp. It takes effect at the next Build & Install. On the A15, Tears of the Kingdom at 75% went from 15 to 30 fps in the area after the opening movie, with the GPU at about 28 ms a frame.
 
@@ -47,7 +51,7 @@ Add a folder holding your game's `.nsp` or `.xci` files, pick your Apple TV, and
 | `Contents/Helpers/uv` | [uv](https://github.com/astral-sh/uv), which makes the engine's Python |
 | `Contents/Resources/Licenses` | nxnative's MIT notice, the engine's third-party licenses and uv's. The About window says the same |
 
-At its first start the app unpacks the engine into `~/Library/Application Support/TVPort/engine/<digest>`, because the engine's tools write beside themselves and a signed app must not change. Then uv downloads Python 3.14 and the packages in `requirements.txt` into `python` and `venv` beside it: about 110 MB, a few seconds, and the only step that needs the internet. Nothing goes into `~/.local` or a shared cache.
+At its first start the app unpacks the engine into `~/Library/Application Support/TVPort/engine/<digest>`, because the engine's tools write beside themselves and a signed app must not change. Then uv downloads Python 3.14 and the packages in `requirements.txt` into `python` and `venv` beside it: about 110 MB, a few seconds, and requires the internet. Automatic eShop artwork also needs the internet on its first lookup. Nothing goes into `~/.local` or a shared cache.
 
 It cannot carry these, so **Setup** checks each and gives the command or the place to fix it:
 
@@ -119,7 +123,22 @@ tvOS has no lasting storage for files: on tvOS 27.2, `Documents` refuses writes 
 | Protected | The app's preferences, seconds after each save (`dm/ios/SourcesTV/TVSaves.m`) | A cache purge, a reinstall. Not deleting the app |
 | Backup | `<title ID>_build/save-backups` on this Mac, or iCloud Drive's `TVPort Saves/<title ID>`. Every 5 minutes while TVPort is open | Anything that happens to the TV |
 
-The protected copy comes back by itself when the save folder is empty. Build & Install backs up first, and puts the newest backup on a TV that has lost its saves. It never replaces a save that is there. **Back Up Saves** makes the same copy at any time.
+The protected copy comes back by itself when the save folder is empty. Build & Install backs up first, and puts the newest backup on a TV that has lost its saves. Automatic recovery checks both working saves and persistent copies before writing; if either exists, or their absence cannot be verified, recovery is skipped. For manual backups, open **Manage Saves** and choose **Back Up to Mac** or **Back Up All Saves**.
+
+### Manage Saves
+
+**Manage Saves** opens a separate window with the native games installed on the selected Apple TV, including games absent from the Mac library. Select a game to see its save slots and these actions:
+
+- **Import Saves to Apple TV:** opens a folder picker, then asks you to confirm the game, save slot and selected folder before backing up and importing. Choose the folder containing the save files, for example from Ryujinx, another compatible emulator, or a native Mac game. Files must match the game and its save format. Quit the Mac game before copying its save.
+- **Back Up to Mac:** makes a read-only copy of the selected Apple TV save slot. **Show in Finder** reveals the ordinary save folder for use with a compatible Mac game or emulator.
+- **Back Up All Saves:** copies every available player and shared save slot from supported games installed on the selected Apple TV. Empty slots are skipped; failures are reported while other backups continue. Each successful copy appears in that game’s Previous Backups and can be restored individually.
+- **Previous Backups / Restore:** dated originals kept before imports and restores, plus copies exported to the Mac. Restoring backs up the current save first, so it too can be undone. **Show in Finder** opens the backup’s **Save Files** folder directly; `record.json` stays outside the game’s save files. Older `before` folders are renamed when accessed, and remain readable under their old name if that location is read-only.
+
+An import or restore closes only the selected game, snapshots its existing save before writing, replaces the selected slot rather than merging stale files, and reads the transfer back to verify its contents. If copying or verification fails, TVPort attempts to restore the original automatically and reports whether recovery succeeded. Other players’ slots are left alone. The persistent tvOS save is accounted for so it does not overwrite the imported files on next launch. No game rebuild is needed.
+
+**Keep backups in iCloud Drive**, in Manage Saves, applies to new automatic backups, manual backups and originals saved before import or restore. Manual backups normally live in `~/Library/Application Support/TVPort/save-imports`; with iCloud enabled and available, new copies go into `iCloud Drive/TVPort Saves/Managed Backups`. Earlier copies stay visible and restorable from either location when the setting changes. If iCloud Drive is unavailable, backups stay local and the window shows a notice. This stores backup folders in iCloud Drive; it is not direct cloud-save syncing on the Apple TV.
+
+Manual backups are kept until you remove them yourself and are separate from the automatic build-folder backups below. Only developer apps whose save containers Xcode can access are eligible; **Show other apps** lists the rest without enabling import. Wake and pair the Apple TV through Xcode if it cannot be reached.
 
 ### Automatic backups
 

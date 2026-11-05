@@ -7,20 +7,32 @@ struct TVPortApp: App {
 
     var body: some Scene {
         WindowGroup("TVPort") {
-            ContentView().environmentObject(library).frame(minWidth: 860, minHeight: 620)
+            ContentView().environmentObject(library).frame(minWidth: 1000, minHeight: 620)
         }
+        .windowResizability(.contentMinSize)
+        .commands { TVPortCommands(library: library) }
+        Settings {
+            DefaultBuildFolderSettings().environmentObject(library)
+        }
+        Window("", id: "manage-saves") {
+            SaveManagerView().environmentObject(library)
+        }
+        .defaultSize(width: 980, height: 780)
         .windowResizability(.contentMinSize)
     }
 }
 
 struct ContentView: View {
     @EnvironmentObject var library: Library
+    @Environment(\.openWindow) private var openWindow
     @State private var choosingFolder = false
 
     var body: some View {
-        NavigationSplitView {
+        NavigationSplitView(columnVisibility: .constant(.all)) {
             List(library.games, selection: $library.selection) { game in
-                VStack(alignment: .leading, spacing: 2) {
+                VStack(alignment: .leading, spacing: 6) {
+                    GameArtworkThumbnail(titleID: game.titleID, name: game.name,
+                                         artworkPath: game.artwork ?? (game.id == library.selection ? library.artworkPath : nil))
                     Text(game.name).lineLimit(1)
                     Text(game.titleID.isEmpty ? "Not built yet" : game.titleID).font(.caption).foregroundStyle(.secondary)
                     if let time = library.backedUp(game) { Text("Saves backed up \(time)").font(.caption).foregroundStyle(.secondary) }
@@ -28,16 +40,19 @@ struct ContentView: View {
                 .tag(game.id)
                 .contextMenu { Button("Remove from List") { library.remove(game) } }
             }
-            .navigationSplitViewColumnWidth(min: 200, ideal: 230)
+            .frame(width: 240)
+            .navigationSplitViewColumnWidth(240)
+            .toolbar(removing: .sidebarToggle)
             .toolbar {
-                Button { library.showingSetup = true } label: {
-                    Label("Setup", systemImage: library.setupMissing.isEmpty ? "checkmark.seal" : "exclamationmark.triangle")
-                }
-                .help("What TVPort needs on this Mac to build")
                 Button { choosingFolder = true } label: { Label("Add Game", systemImage: "plus") }
                     .help("Add a folder holding your game's .nsp or .xci files")
+                Button { openWindow(id: "manage-saves") } label: { Label("Manage Saves", systemImage: "externaldrive.badge.timemachine") }
+                    .help("Import, export and restore saves for games installed on an Apple TV")
+                    .disabled(library.isBusy)
+                SetupStatusButton()
             }
         } detail: {
+            Group {
             if library.current == nil {
                 VStack(spacing: 0) {
                     SetupBanner().padding(20)
@@ -52,7 +67,11 @@ struct ContentView: View {
             } else {
                 GameView()
             }
+            }
+            .frame(minWidth: 740)
         }
+        .navigationSplitViewStyle(.balanced)
+        .toolbar(removing: .sidebarToggle)
         .fileImporter(isPresented: $choosingFolder, allowedContentTypes: [.folder]) { result in
             if case .success(let folder) = result { library.add(folder: folder) }
         }
@@ -60,6 +79,44 @@ struct ContentView: View {
         .task { await library.checkSetup() }
         .task { await library.backUpEveryFewMinutes() }
         .task(id: library.selection) { await library.refresh() }
+        .onChange(of: library.defaultBuildFolder) { _, _ in Task { await library.refresh() } }
+    }
+
+}
+
+struct SetupStatusButton: View {
+    @EnvironmentObject var library: Library
+
+    var body: some View {
+        Button { library.showingSetup = true } label: {
+            Image(systemName: setupHasIssue ? "exclamationmark.triangle" : setupReady ? "checkmark.seal" : "seal")
+                .symbolRenderingMode(.palette)
+                .foregroundStyle(setupHasIssue ? Color.red : setupReady ? Color.green : Color.secondary)
+                .font(.system(size: 20))
+                .frame(width: 28, height: 28)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(setupHelp)
+        .help(setupHelp)
+    }
+
+    private var setupHasIssue: Bool {
+        !library.setupMissing.isEmpty || library.setupFailure != nil
+            || (library.setup?.ready == false && !library.settingUp)
+    }
+
+    private var setupReady: Bool {
+        library.setup?.ready == true && !setupHasIssue && !library.settingUp
+    }
+
+    private var setupHelp: String {
+        if !library.setupMissing.isEmpty {
+            return "Setup — missing: \(library.setupMissing.map(\.name).joined(separator: ", ")). Click to see what needs fixing."
+        }
+        if setupHasIssue { return "Setup needs attention. Click to see what needs fixing." }
+        if setupReady { return "Setup — all requirements are ready." }
+        return library.settingUp ? "Setup is in progress." : "Checking setup requirements…"
     }
 }
 
@@ -78,31 +135,50 @@ struct GameView: View {
                     }
                     HStack(alignment: .top, spacing: 20) {
                         ArtworkCard().frame(width: 300)
-                        SettingsForm()
+                        // The grouped form adds its own 20-point horizontal inset.
+                        // Let the surrounding content provide the shared margins.
+                        SettingsForm().padding(.horizontal, -20)
                     }
                     if let diagnosis = library.diagnosis { DiagnosisCard(diagnosis: diagnosis) }
                 }
                 .padding(20)
             }
-            Divider()
-            ProgressPanel()
-        }
-        .navigationTitle(library.current?.name ?? "TVPort")
-        .toolbar {
-            ToolbarItemGroup {
-                Button("Back Up Saves") { library.backUpSaves() }.disabled(library.bundleID == nil || library.device == nil || library.isBusy)
-                    .help("Copy this game's saves from the Apple TV to this Mac")
-                Button("Last Run") { library.diagnose() }.disabled(library.bundleID == nil || library.device == nil || library.isBusy)
-                    .help("Read memory and frame times from the Apple TV")
-                Button("Open on TV") { library.launch() }.disabled(library.bundleID == nil || library.device == nil || library.isBusy)
-                if library.isBusy {
-                    Button("Stop", role: .cancel) { library.cancel() }
-                } else {
-                    Button("Build & Install") { library.build(install: true) }
-                        .buttonStyle(.borderedProminent).keyboardShortcut("b").disabled(!canBuild)
-                }
+            if library.run != .idle || !library.stage.isEmpty || !library.log.isEmpty {
+                Divider()
+                ProgressPanel()
             }
         }
+        .navigationTitle("")
+        .toolbar { gameToolbar }
+    }
+
+    @ToolbarContentBuilder
+    private var gameToolbar: some ToolbarContent {
+        if #available(macOS 26.0, *) {
+            ToolbarItem(placement: .primaryAction) { actions }
+                .sharedBackgroundVisibility(.hidden)
+        } else {
+            ToolbarItem(placement: .primaryAction) { actions }
+        }
+    }
+
+    private var actions: some View {
+        HStack(spacing: 8) {
+            ToolbarActionButton(title: "Last Run Stats", enabled: canUseInstalledGame,
+                                help: "Read memory and frame times from the Apple TV") { library.diagnose() }
+            ToolbarActionButton(title: "Open on TV", enabled: canUseInstalledGame) { library.launch() }
+            if library.isBusy {
+                ToolbarActionButton(title: "Stop") { library.cancel() }
+            } else {
+                ToolbarActionButton(title: "Build & Install", enabled: canBuild, primary: true) { library.build(install: true) }
+            }
+        }
+        // Add to the toolbar's 8-point inset to match the content's 20-point margin.
+        .padding(.trailing, 12)
+    }
+
+    private var canUseInstalledGame: Bool {
+        library.bundleID != nil && library.device != nil && !library.isBusy
     }
 
     private var canBuild: Bool {
@@ -247,9 +323,13 @@ struct ArtworkCard: View {
             } isTargeted: { targeted = $0 }
             HStack {
                 Button("Choose Artwork…") { choosing = true }
-                if library.current?.artwork != nil { Button("Use Game's Icon") { library.setArtwork(nil) } }
+                if library.current?.artwork != nil { Button("Use Automatic Artwork") { library.setArtwork(nil) } }
             }
-            Text("Any image works. Wide art fills the icon. Square art sits on a blurred copy of itself. The Top Shelf banner comes from the same image.")
+            if library.current?.artwork == nil, !library.artworkStatus.isEmpty {
+                Text(library.artworkStatus).font(.caption).foregroundStyle(.secondary)
+            }
+            ArtworkFramingControls()
+            Text("Automatic framing keeps square art on a blurred background. Crop to fill lets you zoom and choose the visible area. The Top Shelf banner uses the same cropped image. Takes effect at the next Build & Install.")
                 .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         }
         .fileImporter(isPresented: $choosing, allowedContentTypes: [.image]) { result in
@@ -260,10 +340,14 @@ struct ArtworkCard: View {
 
 struct SettingsForm: View {
     @EnvironmentObject var library: Library
+    @Environment(\.openWindow) private var openWindow
     @State private var choosingKeys = false
 
     var body: some View {
         Form {
+            Section("Build folder") {
+                GameBuildFolderSettings()
+            }
             Section("Apple TV") {
                 Picker("Device", selection: $library.device) {
                     if library.devices.isEmpty { Text("None found").tag(AppleTV.ID?.none) }
@@ -273,9 +357,9 @@ struct SettingsForm: View {
                 Button("Look Again") { Task { await library.refreshDevices() } }
             }
             Section("Performance") {
-                Picker("Render mode", selection: binding(\.mode)) { ForEach(RenderMode.allCases) { Text($0.label).tag($0) } }
+                Picker("Render mode", selection: binding(\.mode, default: .handheld)) { ForEach(RenderMode.allCases) { Text($0.label).tag($0) } }
                 Text(library.current?.mode.note ?? "").font(.caption).foregroundStyle(.secondary)
-                Picker("Texture detail", selection: binding(\.texture)) { ForEach(TextureDetail.allCases) { Text($0.label).tag($0) } }
+                Picker("Texture detail", selection: binding(\.texture, default: .medium)) { ForEach(TextureDetail.allCases) { Text($0.label).tag($0) } }
                 Text("The A15 has to store these textures uncompressed, so lower detail saves memory and shortens loading.").font(.caption).foregroundStyle(.secondary)
                 if library.info?.render_scale == true {
                     Picker("3D resolution", selection: renderScaleBinding) {
@@ -284,29 +368,35 @@ struct SettingsForm: View {
                     Text("Draws the game's 3D scene at a lower resolution, so the GPU keeps up; menus and text stay sharp. Below Full the size is fixed, in place of the game's own dynamic resolution. Takes effect at the next Build & Install.")
                         .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 }
-                if let profileFPS = library.info?.fps_target, profileFPS != 0 {
-                    Picker("Frame rate", selection: fpsBinding(profileFPS)) { Text("30 fps").tag(30); Text("Up to 60 fps").tag(60) }
-                    Text("At 30 the TV does half the work, so it heats up more slowly and loads faster, and a game the TV cannot run at 60 is steadier. Up to 60 holds 60 where the TV keeps up and 30 where it does not. Takes effect at the next Build & Install.")
-                        .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                Picker("Frame rate", selection: fpsBinding(profileFPS ?? 0)) {
+                    if profileFPS == nil { Text("Game default").tag(0) }
+                    Text("30 fps").tag(30)
+                    Text("Up to 60 fps").tag(60)
                 }
+                .disabled(profileFPS == nil)
+                Text(frameRateNote)
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 if library.info?.frame_step == true {
                     Toggle("Hold 30 fps when the Apple TV is hot", isOn: coolBinding)
                     Text("When tvOS reports the TV as hot, it lowers the chip's speed, the GPU to about a third, whatever the game does, and this makes the game hold 30 fps so the TV cools down sooner. Off, the game keeps trying for 60, which it can then rarely reach, and the TV stays hot and slow for longer. Takes effect at the next Build & Install.")
                         .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 }
-                Toggle("Frame-rate counter", isOn: binding(\.showFPS))
+                Toggle("Frame-rate counter", isOn: binding(\.showFPS, default: true))
+                Text("Shows how many frames reach the screen each second (FPS) while you play, so you can monitor performance. This only displays the frame rate; it does not change the FPS limit. Takes effect at the next Build & Install.")
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
+            Section("Controller") {
+                Toggle("Swap A/B and X/Y", isOn: swapButtonsBinding)
+                Text("Swaps A with B and X with Y on connected controllers for this game. Takes effect at the next Build & Install.")
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
             Section("Saves") {
+                Button("Manage Saves…") { openWindow(id: "manage-saves") }.disabled(library.isBusy)
+                Text("While TVPort is open, it backs up each built game's saves from the Apple TV every 5 minutes, only reading the TV. Enable iCloud backups in Manage Saves to keep new backups in iCloud Drive, in TVPort Saves.")
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 TextField("Players", text: playersBinding, prompt: Text("Names, separated by commas"))
                 Text("With two or more names, the Apple TV asks who's playing, and each person gets their own saves. The first name picked keeps the saves already on the TV. Takes effect at the next Build & Install.")
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                Toggle("Keep backups in iCloud Drive", isOn: $library.icloudBackups)
-                Text("While TVPort is open, it backs up each built game's saves from the Apple TV every 5 minutes, only reading the TV. With this on, new backups go to iCloud Drive, in TVPort Saves.")
-                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                if library.icloudBackups && !library.icloudAvailable {
-                    Label("iCloud Drive is off on this Mac, so backups stay beside the game. Turn it on in System Settings > Apple Account > iCloud.", systemImage: "icloud.slash")
-                        .font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
-                }
                 if let game = library.current, let time = library.backedUp(game) {
                     LabeledContent("Last backup", value: "\(time), \(place(game))")
                 }
@@ -338,8 +428,27 @@ struct SettingsForm: View {
         Binding(get: { library.current?.players ?? "" }, set: { value in library.update { $0.players = value } })
     }
 
+    private var profileFPS: Int? {
+        guard let fps = library.info?.fps_target, [30, 60].contains(fps) else { return nil }
+        return fps
+    }
+
+    private var frameRateNote: String {
+        guard let info = library.info else { return "Frame-rate selection is unavailable until the game has been checked." }
+        if info.title_id.isEmpty { return "Frame-rate selection becomes available once a supported game profile is detected. Until then, the game uses its own frame rate." }
+        guard profileFPS != nil else { return "This game's profile does not support choosing a frame rate. The game uses its own frame rate." }
+        return "At 30 the TV does half the work, so it heats up more slowly and loads faster, and a game the TV cannot run at 60 is steadier. Up to 60 holds 60 where the TV keeps up and 30 where it does not. Takes effect at the next Build & Install."
+    }
+
     private func fpsBinding(_ profile: Int) -> Binding<Int> {
-        Binding(get: { library.current?.fpsTarget ?? profile }, set: { value in library.update { $0.fpsTarget = value == profile ? nil : value } })
+        Binding(get: { profile == 0 ? 0 : library.current?.fpsTarget ?? profile }, set: { value in
+            guard profile != 0 else { return }
+            library.update { $0.fpsTarget = value == profile ? nil : value }
+        })
+    }
+
+    private var swapButtonsBinding: Binding<Bool> {
+        Binding(get: { library.current?.swapABXY ?? false }, set: { value in library.update { $0.swapABXY = value } })
     }
 
     private var coolBinding: Binding<Bool> {
@@ -350,8 +459,16 @@ struct SettingsForm: View {
         Binding(get: { library.current?.renderScale ?? 1 }, set: { value in library.update { $0.renderScale = value < 1 ? value : nil } })
     }
 
-    private func binding<T>(_ path: WritableKeyPath<Game, T>) -> Binding<T> {
-        Binding(get: { library.current![keyPath: path] }, set: { value in library.update { $0[keyPath: path] = value } })
+    private func binding<T>(_ path: WritableKeyPath<Game, T>, default fallback: T) -> Binding<T> {
+        // SwiftUI can read a control's binding while removing its game view.
+        // Keep it tied to that game and tolerate the game no longer existing.
+        let gameID = library.selection
+        return Binding(get: {
+            library.games.first { $0.id == gameID }?[keyPath: path] ?? fallback
+        }, set: { value in
+            guard library.selection == gameID else { return }
+            library.update { $0[keyPath: path] = value }
+        })
     }
 }
 
@@ -387,21 +504,27 @@ struct ProgressPanel: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
                 switch library.run {
-                case .idle: Text(library.stage.isEmpty ? "Ready" : library.stage).foregroundStyle(.secondary)
+                case .idle:
+                    if !library.stage.isEmpty { Text(library.stage).foregroundStyle(.secondary) }
                 case .running:
                     ProgressView().controlSize(.small)
                     Text(library.stage).lineLimit(1)
                 case .succeeded: Label(library.stage, systemImage: "checkmark.circle.fill").foregroundStyle(.green)
                 case .failed: Label("Failed", systemImage: "xmark.octagon.fill").foregroundStyle(.red)
                 }
+                if !library.log.isEmpty {
+                    if library.run != .idle || !library.stage.isEmpty {
+                        Text("|").foregroundStyle(.secondary).accessibilityHidden(true)
+                    }
+                    Button(showLog ? "Hide Log" : "Show Log") { showLog.toggle() }.buttonStyle(.link)
+                }
                 Spacer()
-                Button(showLog ? "Hide Log" : "Show Log") { showLog.toggle() }.buttonStyle(.link)
             }
             if library.run == .running, let progress = library.progress { ProgressView(value: progress) }
             if case .failed(let message) = library.run {
                 Text(message).font(.callout).textSelection(.enabled).lineLimit(8).foregroundStyle(.red)
             }
-            if showLog {
+            if showLog && !library.log.isEmpty {
                 ScrollViewReader { reader in
                     ScrollView {
                         LazyVStack(alignment: .leading, spacing: 0) {
@@ -417,5 +540,8 @@ struct ProgressPanel: View {
             }
         }
         .padding(12)
+        .onChange(of: library.log.isEmpty) { _, isEmpty in
+            if isEmpty { showLog = false }
+        }
     }
 }

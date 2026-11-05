@@ -15,6 +15,29 @@ func loadImage(_ path: String) -> CGImage {
     return image
 }
 
+// Crop the source once at the icon's 5:3 aspect ratio. Every asset and preview then uses the same artwork.
+// Positions select from the available overflow: -1 left/top, 0 center, +1 right/bottom.
+func cropArtwork(_ image: CGImage, environment: [String: String]) -> CGImage {
+    func number(_ key: String, fallback: Double, range: ClosedRange<Double>) -> Double {
+        guard let raw = environment[key] else { return fallback }
+        guard let n = Double(raw), n.isFinite, range.contains(n) else { fail("invalid \(key)") }
+        return n
+    }
+    let scale = number("DM_ICON_CROP_SCALE", fallback: 0, range: 0...3)
+    if scale == 0 { return image }
+    guard scale >= 1 else { fail("crop scale must be at least 1") }
+    let x = number("DM_ICON_CROP_X", fallback: 0, range: -1...1)
+    let y = number("DM_ICON_CROP_Y", fallback: 0, range: -1...1)
+    let width = Double(image.width), height = Double(image.height)
+    let cropWidth = min(width, height * 5 / 3) / scale
+    let cropHeight = cropWidth * 3 / 5
+    let rect = CGRect(x: (width - cropWidth) * (x + 1) / 2,
+                      y: (height - cropHeight) * (y + 1) / 2,
+                      width: cropWidth, height: cropHeight)
+    guard let cropped = image.cropping(to: rect) else { fail("cannot crop this image") }
+    return cropped
+}
+
 func bitmap(_ w: Int, _ h: Int) -> CGContext {
     guard let c = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpace(name: CGColorSpace.sRGB)!,
                             bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { fail("cannot make a \(w)x\(h) bitmap") }
@@ -133,7 +156,7 @@ func shelfSet(_ art: CGImage, _ name: String, _ w: Int, _ h: Int, in brand: URL)
 
 let args = CommandLine.arguments
 guard args.count >= 3 else { fail("usage: tv_icon.swift <image> <Assets.xcassets> | <image> --preview <out.png>") }
-let art = loadImage(args[1])
+let art = cropArtwork(loadImage(args[1]), environment: ProcessInfo.processInfo.environment)
 
 if args[2] == "--preview" {
     guard args.count == 4 else { fail("--preview needs an output path") }

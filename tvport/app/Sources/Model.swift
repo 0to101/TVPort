@@ -29,12 +29,17 @@ struct Game: Codable, Identifiable, Hashable {
     var name: String
     var titleID = ""
     var artwork: String?
+    var artworkCrop: ArtworkCrop?
+    var buildFolder: String?
+    var buildNextToOriginal: Bool?
+    var lastBuildPath: String?
     var keys: String?
     var mode: RenderMode = .handheld
     var texture: TextureDetail = .medium
     var renderScale: Double?   // the 3D views at this fraction of the game's size, for games with a render-scale stub; nil = full size. Optional: library.json saved before it decodes as is
     var coolWhenHot: Bool?     // frame-step games hold 30 fps while the TV is thermally serious; nil = on (the engine's default)
     var fpsTarget: Int?        // 30 or 60 in place of the profile's fps_target; nil = the profile's
+    var swapABXY: Bool?       // nil = off, including libraries saved before this option existed
     var showFPS = true
     var players: String?
     var id: String { folder }
@@ -49,6 +54,8 @@ final class Library: ObservableObject {
     @Published var games: [Game] = []
     @Published var selection: Game.ID?
     @Published var info: GameInfo?
+    @Published var automaticArtwork: String?
+    @Published var artworkStatus = ""
     @Published var preview: NSImage?
     @Published var devices: [AppleTV] = []
     @Published var device: AppleTV.ID?
@@ -64,12 +71,18 @@ final class Library: ObservableObject {
     @Published var setupStage = ""
     @Published var setupFailure: String?
     @Published var showingSetup = false
+    @Published var transferringSaves = false
     @Published var backups: [String: BackupStatus] = [:]
     @Published var icloudBackups = UserDefaults.standard.bool(forKey: "BackUpToICloud") {
         didSet { UserDefaults.standard.set(icloudBackups, forKey: "BackUpToICloud") }
     }
     @Published var icloudAvailable = true
+    @Published var defaultBuildFolder = UserDefaults.standard.string(forKey: "DefaultBuildFolder") ?? "" {
+        didSet { UserDefaults.standard.set(defaultBuildFolder, forKey: "DefaultBuildFolder") }
+    }
     private var building: Task<Void, Never>?
+    private var previewTask: Task<Void, Never>?
+    private var previewRequest = UUID()
     private static let backupInterval: Double = 300
     private static let retryInterval: Double = 60   // while the TV cannot be reached, so a round comes soon after it can
 
@@ -82,8 +95,10 @@ final class Library: ObservableObject {
         try? FileManager.default.createDirectory(at: Self.previews, withIntermediateDirectories: true)
     }
 
+    var artworkPath: String? { current?.artwork ?? automaticArtwork ?? info?.icon }
+
     var current: Game? { games.first { $0.id == selection } }
-    var isBusy: Bool { run == .running || settingUp }
+    var isBusy: Bool { run == .running || settingUp || transferringSaves }
     /// Unknown until the first check, which then does not hold anything back.
     var setupMissing: [Check] { setup?.checks.filter { !$0.ok } ?? [] }
     var bundleID: String? { info?.bundle_id }
@@ -117,7 +132,8 @@ final class Library: ObservableObject {
 
     /// Reads the selected game's folder and refreshes the Apple TV list.
     func refresh() async {
-        info = nil; preview = nil; diagnosis = nil; notice = nil
+        previewTask?.cancel(); previewRequest = UUID()
+        info = nil; preview = nil; automaticArtwork = nil; artworkStatus = ""; diagnosis = nil; notice = nil
         await refreshDevices()
         guard let game = current else { return }
         do {
@@ -125,9 +141,29 @@ final class Library: ObservableObject {
             guard selection == game.id else { return }
             info = found
             if team.isEmpty, let known = found.team { team = known }
-            update { $0.name = found.name; $0.titleID = found.title_id }
+            update {
+                $0.name = found.name; $0.titleID = found.title_id
+                if let path = found.build_path { $0.lastBuildPath = path }
+            }
+            let titleID = found.artwork_title_id ?? found.title_id
+            automaticArtwork = ArtworkStore.cachedBanner(titleID)?.path
             await renderPreview()
+            await findArtwork(titleID: titleID, gameID: game.id)
         } catch { notice = error.localizedDescription }
+    }
+
+    func findArtwork(titleID: String, gameID: Game.ID) async {
+        guard !titleID.isEmpty else {
+            artworkStatus = "Automatic artwork needs a title ID in the game filename or an existing build."
+            return
+        }
+        guard current?.artwork == nil else { return }
+        artworkStatus = automaticArtwork == nil ? "Looking up eShop artwork…" : ""
+        _ = await ArtworkStore.shared.fetchMissing([titleID])
+        guard selection == gameID else { return }
+        automaticArtwork = ArtworkStore.cachedBanner(titleID)?.path
+        artworkStatus = automaticArtwork == nil ? "No eShop artwork available. Using the game's icon when available, or choose an image." : ""
+        await renderPreview()
     }
 
     func refreshDevices() async {
@@ -138,20 +174,42 @@ final class Library: ObservableObject {
     }
 
     func setArtwork(_ url: URL?) {
-        update { $0.artwork = url?.path }
-        Task { await renderPreview() }
+        update { $0.artwork = url?.path; $0.artworkCrop = nil }
+        schedulePreview()
+        if url == nil, let game = current {
+            let titleID = info?.artwork_title_id ?? info?.title_id ?? game.titleID
+            Task { await findArtwork(titleID: titleID, gameID: game.id) }
+        }
     }
 
-    /// The same drawing the build uses (tv_icon.swift), so what shows here is what the TV shows.
+    func setArtworkCrop(_ crop: ArtworkCrop?) {
+        update { $0.artworkCrop = crop }
+        schedulePreview()
+    }
+
+    private func schedulePreview() {
+        previewTask?.cancel()
+        previewRequest = UUID() // Invalidate a renderer already running before the next one starts.
+        previewTask = Task {
+            do { try await Task.sleep(for: .milliseconds(300)) } catch { return }
+            await renderPreview()
+        }
+    }
+
+    /// Preview and installed artwork use the same renderer and crop arguments.
     func renderPreview() async {
-        guard let art = current?.artwork ?? info?.icon else { preview = nil; return }
+        let request = UUID()
+        previewRequest = request
+        guard let game = current, let art = artworkPath else { preview = nil; return }
         let out = Self.previews.appendingPathComponent(UUID().uuidString + ".png")
+        defer { try? FileManager.default.removeItem(at: out) }
         struct Answer: Decodable { let preview: String }
         do {
-            _ = try await Backend.ask(Answer.self, ["preview", "--art", art, "--out", out.path])
+            _ = try await Backend.ask(Answer.self, ["preview", "--art", art, "--out", out.path] + (game.artworkCrop?.arguments ?? []))
+            guard previewRequest == request, current?.id == game.id, !Task.isCancelled else { return }
             preview = NSImage(contentsOf: out)
-            try? FileManager.default.removeItem(at: out)
         } catch {
+            guard previewRequest == request, current?.id == game.id, !Task.isCancelled else { return }
             preview = nil
             notice = "That artwork could not be read: \(error.localizedDescription)"
         }
@@ -160,6 +218,7 @@ final class Library: ObservableObject {
     func build(install: Bool) {
         guard let game = current, !isBusy else { return }
         var arguments = [game.folder, "--mode", game.mode.rawValue, "--texture-cap", String(game.texture.rawValue)]
+        if game.swapABXY == true { arguments.append("--swap-ab-xy") }
         if game.showFPS { arguments.append("--fps") }
         if let scale = game.renderScale, scale < 1, info?.render_scale == true { arguments += ["--render-scale", String(scale)] }
         if game.coolWhenHot == false, info?.frame_step == true { arguments.append("--no-thermal-cap") }
@@ -167,7 +226,8 @@ final class Library: ObservableObject {
         if !team.isEmpty { arguments += ["--team", team] }
         if let keys { arguments += ["--keys", keys] }
         if let players = game.players, !players.isEmpty { arguments += ["--players", players] }
-        if let art = game.artwork { arguments += ["--art", art] }
+        if let art = artworkPath { arguments += ["--art", art] }
+        arguments += game.artworkCrop?.arguments ?? []
         if icloudBackups { arguments.append("--icloud") }
         if install, let device { arguments += ["--device", device] }
         run = .running; stage = "Starting"; progress = nil; log = []; notice = nil
@@ -251,7 +311,7 @@ final class Library: ObservableObject {
         if devices.isEmpty { await refreshDevices() }
         let folders = games.filter { !$0.titleID.isEmpty }.map(\.folder)
         guard let device else { return Self.retryInterval }
-        guard !folders.isEmpty, run != .running else { return Self.backupInterval }   // a build backs up first anyway
+        guard !folders.isEmpty, !isBusy else { return Self.backupInterval }   // builds and imports manage their own backups
         let arguments = ["autobackup", "--device", device] + folders.flatMap { ["--folder", $0] } + (icloudBackups ? ["--icloud"] : [])
         guard let round = try? await Backend.ask(BackupRound.self, arguments) else { return Self.backupInterval }
         icloudAvailable = round.icloud

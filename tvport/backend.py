@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import fcntl
+import hashlib
 import json
 import os
 import plistlib
@@ -207,10 +208,37 @@ class Game:
             raise Failure(f'No such folder: {self.folder}')
         self.title_id = ''
         self.build = None
-        builds = sorted(p for p in self.folder.iterdir() if p.is_dir() and TITLE_RE.match(p.name))
+        saved = {}
+        try:
+            library = json.loads((DATA / 'library.json').read_text())
+            saved = next((item for item in library if isinstance(item, dict) and Path(item.get('folder', '')).expanduser().resolve() == self.folder), {})
+        except (OSError, ValueError, TypeError):
+            pass
+        chosen = saved.get('buildFolder') or os.environ.get('TVPORT_DEFAULT_BUILD_FOLDER')
+        if saved.get('buildNextToOriginal') is not None:
+            chosen = None if saved['buildNextToOriginal'] else os.environ.get('TVPORT_DEFAULT_BUILD_FOLDER')
+        self.storage_root = Path(chosen).expanduser().resolve() if chosen else self.folder
+        # A stable per-source subfolder keeps two editions or source folders from sharing caches.
+        leaf = re.sub(r'[^\w .()-]', '_', self.folder.name)[:80] + '-' + hashlib.sha256(str(self.folder).encode()).hexdigest()[:8]
+        self.build_parent = self.storage_root / leaf if chosen else self.folder
+        builds = sorted(p for p in self.build_parent.iterdir() if p.is_dir() and TITLE_RE.match(p.name)) if self.build_parent.is_dir() else []
+        previous = Path(saved['lastBuildPath']) if saved.get('lastBuildPath') else None
+        if not builds and previous and previous.is_dir() and TITLE_RE.fullmatch(previous.name):
+            builds = [previous]
+        if not builds and self.build_parent != self.folder:
+            builds = sorted(p for p in self.folder.iterdir() if p.is_dir() and TITLE_RE.match(p.name))
         if builds:
             self.build = builds[0]
             self.title_id = TITLE_RE.match(self.build.name).group(1)
+
+    @property
+    def artwork_title_id(self) -> str:
+        if self.title_id:
+            return self.title_id.upper()
+        # Filename lookup is only a hint for artwork, never an identity used for building.
+        ids = {match.upper() for name in self.sources for match in re.findall(r'(?<![0-9A-Fa-f])([0-9A-Fa-f]{16})(?![0-9A-Fa-f])', name)
+               if match.upper().startswith('0100') and match.endswith('000')}
+        return next(iter(ids)) if len(ids) == 1 else ''
 
     @property
     def sources(self) -> list:
@@ -454,14 +482,34 @@ def cmd_inspect(args) -> None:
     app = game.earlier_app() if game.build else None
     profile = provisioning(app)
     team = profile.get('team') or known_team()
-    print(json.dumps({'folder': str(game.folder), 'title_id': game.title_id, 'name': game.name() if game.build else game.folder.name, 'version': game.version() if game.build else '',
+    print(json.dumps({'folder': str(game.folder), 'title_id': game.title_id, 'artwork_title_id': game.artwork_title_id, 'name': game.name() if game.build else game.folder.name, 'version': game.version() if game.build else '',
+                      'build_folder': str(game.build_parent), 'build_path': str(game.build) if game.build else None,
                       'sources': game.sources, 'prepared': game.prepared, 'render_scale': game.render_scale_supported() if game.build else False, 'frame_step': game.frame_step_supported() if game.build else False, 'fps_target': int(game.profile_value('fps_target') or 0) if game.title_id else 0, 'icon': str(game.icon) if game.icon else None, 'team': team,
                       'bundle_id': game.bundle_id(team) if game.build and team else None, 'signing': profile, 'saved': game.state(),
                       'keys': str(find_keys(game) or '') or None, **backup_info(latest_backup(game))}))
 
 
+def artwork_env(args) -> dict:
+    """Shared crop configuration for previews and the generated Apple TV assets."""
+    return {'DM_ICON_CROP_SCALE': str(args.art_scale), 'DM_ICON_CROP_X': str(args.art_x), 'DM_ICON_CROP_Y': str(args.art_y)}
+
+
+def art_scale_arg(text: str) -> float:
+    value = float(text)
+    if value != 0 and not 1 <= value <= 3:
+        raise argparse.ArgumentTypeError('art scale must be 0 (automatic) or 1 to 3')
+    return value
+
+
+def art_position_arg(text: str) -> float:
+    value = float(text)
+    if not -1 <= value <= 1:
+        raise argparse.ArgumentTypeError('art position must be -1 to 1')
+    return value
+
+
 def cmd_preview(args) -> None:
-    result = run(['xcrun', 'swift', REPO / 'dm/ios/tools/tv_icon.swift', args.art, '--preview', args.out])
+    result = run(['xcrun', 'swift', REPO / 'dm/ios/tools/tv_icon.swift', args.art, '--preview', args.out], env={**os.environ, **artwork_env(args)})
     if result.returncode:
         raise Failure(result.stderr.strip() or 'The artwork could not be read')
     print(json.dumps({'preview': str(args.out)}))
@@ -597,7 +645,23 @@ def backup_saves(game: Game, device: str, bundle: str, icloud: bool = False, att
 def restore_saves(game: Game, device: str, bundle: str) -> int:
     """Puts the newest backup back on a TV that has lost its saves. It never replaces a save that is there."""
     backup = latest_backup(game)
-    if not backup or save_files(device, bundle):
+    if not backup:
+        return 0
+    from save_import import SaveImporter
+    importer = SaveImporter(sys.modules[__name__])
+    try:
+        listing = importer.listing(device, bundle)
+        if any(SAVE_FILE.match(name.removeprefix('Caches/')) for name in listing if name.startswith('Caches/')):
+            return 0
+        # tvOS may purge Caches while the real save still exists in Preferences.
+        if any(name.startswith('Preferences/tv-saves/') and name.endswith('.dmsync') for name in listing):
+            return 0
+        with tempfile.TemporaryDirectory() as folder:
+            prefs = importer.preferences(device, bundle, listing, Path(folder))
+        if any(key.startswith('dmsave:') for key in prefs):
+            return 0
+    except (Failure, OSError, ValueError):
+        emit('log', line='Automatic save recovery skipped: existing saves could not be verified. No saves were replaced.')
         return 0
     names = [p for p in backup.rglob('*') if p.is_file() and SAVE_FILE.match(str(p.relative_to(backup)))]
     for path in names:
@@ -607,7 +671,7 @@ def restore_saves(game: Game, device: str, bundle: str) -> int:
     return len(names)
 
 
-def write_env(game: Game, mode: str, texture_cap: int, players: str = '', render_scale: float = 1.0, thermal_cap: bool = True, fps_target: int = 0) -> Path:
+def write_env(game: Game, mode: str, texture_cap: int, players: str = '', render_scale: float = 1.0, thermal_cap: bool = True, fps_target: int = 0, swap_ab_xy: bool = False) -> Path:
     """The switches the app reads at launch (main.m, dm/env.txt)."""
     path = game.build / 'tvport-env.txt'
     lines = ['# Written by TVPort', f'DM_OPMODE={0 if mode == "handheld" else 1}', f'DM_BC_MAX_DIM={texture_cap}']
@@ -617,6 +681,8 @@ def write_env(game: Game, mode: str, texture_cap: int, players: str = '', render
         lines.append(f'DM_FPS_TARGET={fps_target}')
     if not thermal_cap:   # the frame step keeps its cap when the TV is hot; tvOS lowers the clocks then all the same (docs/reference/frame-rate.md)
         lines.append('DM_THERMAL_CAP=0')
+    if swap_ab_xy:
+        lines.append('DM_PAD_SWAP_AB_XY=1')
     if players.strip():
         lines.append('DM_TV_PLAYERS=' + ' '.join(players.split()))
     path.write_text('\n'.join(lines) + '\n')
@@ -649,6 +715,8 @@ def prepare_game(game: Game, keys: Optional[Path], team: str, python: str) -> Ga
     if not keys:
         raise Failure('This game has not been built yet, so it needs your prod.keys file')
     command = [python, REPO / 'scripts/build_ipa_from_nsp.py', game.folder, '-k', keys, '--prepare-xcode', '--keep-extracted', '--gpu', 'none', '--romfs', 'separate', '--allow-other-metal', '--progress', 'lines']
+    if game.build_parent != game.folder:
+        command += ['--build-root', game.build_parent]
     if team:
         command += ['--team-id', team]
     stream(command, cwd=REPO)
@@ -663,8 +731,9 @@ def generate_project(game: Game, args, team: str, bundle: str, python: str) -> P
     restore_tables(game)
     env = profile_env(game)
     env.update(GAME=game.title_id, W=str(game.build), PATCHED=str(game.build / f'patched_{game.package}'), ROMFS=str(game.romfs), MSL_IOS=str(game.shaders), AOC='',
-               DM_TVOS='1', DM_COPY_ROMFS='NO', DM_SHOW_FPS='1' if args.fps else '0', DM_ENV_FILE=str(write_env(game, args.mode, args.texture_cap, args.players, args.render_scale, not args.no_thermal_cap, args.fps_target)), DM_BUNDLE_ID=bundle, DM_TEAM_ID=team,
+               DM_TVOS='1', DM_COPY_ROMFS='NO', DM_SHOW_FPS='1' if args.fps else '0', DM_ENV_FILE=str(write_env(game, args.mode, args.texture_cap, args.players, args.render_scale, not args.no_thermal_cap, args.fps_target, args.swap_ab_xy)), DM_BUNDLE_ID=bundle, DM_TEAM_ID=team,
                DM_XCODE_PROJECT_DIR=str(game.build / 'tvport-xcode'), DM_XCODE_DERIVED_DATA=str(game.build / 'tvport-derived'), FONT_PY=python)
+    env.update(artwork_env(args))
     art = args.art or game.icon
     if art:
         env['DM_ICON'] = str(art)
@@ -747,12 +816,37 @@ def one_build_at_a_time():
     return lock
 
 
+def relocate_build(game: Game) -> Game:
+    """Copy an existing build to its chosen location without deleting the original."""
+    if not game.storage_root.is_dir():
+        raise Failure('The selected build folder is unavailable. Connect its drive or choose another folder in settings.')
+    if not game.build or game.build.parent == game.build_parent:
+        return game
+    destination = game.build_parent / game.build.name
+    if destination.exists():
+        raise Failure('The destination already contains a build. Choose another build folder before continuing.')
+    stage('Copying the existing build to its new folder')
+    game.build_parent.mkdir(parents=True, exist_ok=True)
+    staging = Path(tempfile.mkdtemp(prefix='.tvport-copy-', dir=game.build_parent))
+    try:
+        shutil.copytree(game.build, staging, symlinks=True, dirs_exist_ok=True)
+        staging.rename(destination)
+    except OSError as error:
+        raise Failure(f'The build could not be copied. The original is unchanged: {error}') from error
+    finally:
+        if staging.exists():
+            shutil.rmtree(staging)
+    emit('log', line=f'Build copied to {destination}. Original kept at {game.build}.')
+    return Game(game.folder)
+
+
 def cmd_build(args) -> None:
     lock = one_build_at_a_time()   # held until this process exits
     game = Game(args.folder)
     team = args.team or known_team()
     if not team:
         raise Failure('No Apple signing team found. Open Xcode, sign in under Settings > Accounts, and build any app for the Apple TV once.')
+    game = relocate_build(game)
     if BUNDLED:
         prune_engines(REPO)
     python = engine_python()
@@ -912,11 +1006,66 @@ def cmd_diagnose(args) -> None:
         print(json.dumps({'run': run_log, 'kills': kills[-5:], 'verdicts': verdicts(run_log, kills[-1:]), 'log': log[-20000:]}))
 
 
+def cmd_save_import(args) -> None:
+    from save_import import SaveImporter
+    importer = SaveImporter(sys.modules[__name__], icloud=getattr(args, 'icloud', False))
+    try:
+        if args.command == 'installed-games':
+            answer = {'apps': importer.apps(args.device)}
+        elif args.command == 'save-targets':
+            answer = {'slots': importer.targets(args.device, args.bundle), 'backups': importer.history(args.device, args.bundle)}
+        elif args.command == 'save-source':
+            answer = importer.source(args.folder)
+        elif args.command == 'save-history':
+            answer = {'backups': importer.history(args.device, args.bundle)}
+        else:
+            with one_build_at_a_time():
+                if args.command == 'restore-save':
+                    answer = importer.restore(args.device, args.bundle, args.backup)
+                elif args.command == 'export-save':
+                    answer = importer.export(args.device, args.bundle, args.slot)
+                elif args.command == 'export-all-saves':
+                    answer = importer.export_all(args.device)
+                else:
+                    answer = importer.transfer(args.device, args.bundle, args.slot, args.folder)
+        answer['icloud_available'] = importer.icloud_available
+        print(json.dumps(answer))
+    except (OSError, ValueError) as error:
+        raise Failure(f'The save operation could not complete: {error}') from error
+
+
 def main() -> int:
     global REPO
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest='command', required=True)
     commands.add_parser('devices')
+    installed = commands.add_parser('installed-games')
+    installed.add_argument('--device', required=True)
+    targets = commands.add_parser('save-targets')
+    targets.add_argument('--device', required=True)
+    targets.add_argument('--bundle', required=True)
+    source = commands.add_parser('save-source')
+    source.add_argument('folder', type=Path)
+    importing = commands.add_parser('import-save')
+    importing.add_argument('folder', type=Path)
+    importing.add_argument('--device', required=True)
+    importing.add_argument('--bundle', required=True)
+    importing.add_argument('--slot', required=True)
+    restoring = commands.add_parser('restore-save')
+    restoring.add_argument('--device', required=True)
+    restoring.add_argument('--bundle', required=True)
+    restoring.add_argument('--backup', required=True)
+    history = commands.add_parser('save-history')
+    history.add_argument('--device', required=True)
+    history.add_argument('--bundle', required=True)
+    exporting = commands.add_parser('export-save')
+    exporting.add_argument('--device', required=True)
+    exporting.add_argument('--bundle', required=True)
+    exporting.add_argument('--slot', required=True)
+    export_all = commands.add_parser('export-all-saves')
+    export_all.add_argument('--device', required=True)
+    for command in (importing, restoring, exporting, export_all):
+        command.add_argument('--icloud', action='store_true')
     inspect = commands.add_parser('inspect')
     inspect.add_argument('folder', type=Path)
     preview = commands.add_parser('preview')
@@ -933,9 +1082,14 @@ def main() -> int:
     build.add_argument('--render-scale', type=render_scale_arg, default=1.0)
     build.add_argument('--no-thermal-cap', action='store_true')
     build.add_argument('--fps-target', type=int, choices=(0, 30, 60), default=0)   # 0: the profile's
+    build.add_argument('--swap-ab-xy', action='store_true')
     build.add_argument('--fps', action='store_true')
     build.add_argument('--players', default='')
     build.add_argument('--icloud', action='store_true')
+    for command in (preview, build):
+        command.add_argument('--art-scale', type=art_scale_arg, default=0.0)
+        command.add_argument('--art-x', type=art_position_arg, default=0.0)
+        command.add_argument('--art-y', type=art_position_arg, default=0.0)
     backup = commands.add_parser('backup')
     backup.add_argument('folder', type=Path)
     backup.add_argument('--device', required=True)
@@ -961,7 +1115,8 @@ def main() -> int:
                 stage('Unpacking the engine')
             REPO = unpack_engine(HERE, DATA)
         {'devices': cmd_devices, 'inspect': cmd_inspect, 'preview': cmd_preview, 'build': cmd_build, 'backup': cmd_backup, 'launch': cmd_launch, 'diagnose': cmd_diagnose,
-         'doctor': cmd_doctor, 'setup': cmd_setup, 'autobackup': cmd_autobackup}[args.command](args)
+         'doctor': cmd_doctor, 'setup': cmd_setup, 'autobackup': cmd_autobackup,
+         **{name: cmd_save_import for name in ('installed-games', 'save-targets', 'save-source', 'save-history', 'import-save', 'export-save', 'export-all-saves', 'restore-save')}}[args.command](args)
     except Failure as failure:
         if streamed:
             emit('error', message=str(failure))

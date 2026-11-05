@@ -4,6 +4,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import backend  # noqa: E402
@@ -371,7 +372,7 @@ class Saves(unittest.TestCase):
     def test_restore_only_when_the_tv_has_lost_its_saves(self):
         copied = []
         _, fake_run, _ = self.fake_device({}, copied)
-        real_run, real_list = backend.run, backend.save_files
+        real_run = backend.run
         backend.run = fake_run
         try:
             with tempfile.TemporaryDirectory() as folder:
@@ -379,14 +380,29 @@ class Saves(unittest.TestCase):
                 saved = game.build / 'save-backups/2026-11-02-150000/save'
                 saved.mkdir(parents=True)
                 (saved / 'File1.bin').write_bytes(b'x')
-                backend.save_files = lambda d, b: ['save/File1.bin']
-                self.assertEqual(backend.restore_saves(game, 'd', 'b'), 0)
-                self.assertEqual(copied, [])
-                backend.save_files = lambda d, b: []
-                self.assertEqual(backend.restore_saves(game, 'd', 'b'), 1)
-                self.assertEqual(copied, ['Library/Caches/save/File1.bin'])
+                with patch('save_import.SaveImporter.listing', return_value={'Caches/save/File1.bin': {}}):
+                    self.assertEqual(backend.restore_saves(game, 'd', 'b'), 0)
+                    self.assertEqual(copied, [])
+                with patch('save_import.SaveImporter.listing', return_value={}), patch('save_import.SaveImporter.preferences', return_value={}):
+                    self.assertEqual(backend.restore_saves(game, 'd', 'b'), 1)
+                    self.assertEqual(copied, ['Library/Caches/save/File1.bin'])
         finally:
-            backend.run, backend.save_files = real_run, real_list
+            backend.run = real_run
+
+    def test_automatic_restore_never_writes_when_lookup_fails_or_persistent_save_exists(self):
+        with tempfile.TemporaryDirectory() as folder:
+            game = self.make_game(folder)
+            saved = game.build / 'save-backups/2026-11-02-150000/save'
+            saved.mkdir(parents=True)
+            (saved / 'File1.bin').write_bytes(b'old backup')
+            with patch.object(backend, 'run') as copy:
+                with patch('save_import.SaveImporter.listing', side_effect=backend.Failure('TV unavailable')):
+                    self.assertEqual(backend.restore_saves(game, 'd', 'b'), 0)
+                with patch('save_import.SaveImporter.listing', return_value={'Preferences/tv-saves/save_title_save.dmsync': {}}):
+                    self.assertEqual(backend.restore_saves(game, 'd', 'b'), 0)
+                with patch('save_import.SaveImporter.listing', return_value={}), patch('save_import.SaveImporter.preferences', return_value={'dmsave:save/title/save.dmsync': b'current progress'}):
+                    self.assertEqual(backend.restore_saves(game, 'd', 'b'), 0)
+                copy.assert_not_called()
 
     def test_players_reach_the_app(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -422,6 +438,13 @@ class Saves(unittest.TestCase):
             (game.build / 'profile/0100000000010000').mkdir(parents=True)
             (game.build / 'profile/0100000000010000/game.tsv').write_text('title_id\t0100000000010000\nfps_target\t60\n')
             self.assertEqual(backend.Game(Path(folder)).profile_value('fps_target'), '60')   # a derived profile wins
+
+    def test_button_swap_reaches_the_app_and_can_be_disabled(self):
+        with tempfile.TemporaryDirectory() as folder:
+            game = self.make_game(folder)
+            self.assertNotIn('DM_PAD_SWAP_AB_XY', backend.write_env(game, 'handheld', 512).read_text())
+            self.assertIn('DM_PAD_SWAP_AB_XY=1\n', backend.write_env(game, 'handheld', 512, swap_ab_xy=True).read_text())
+            self.assertNotIn('DM_PAD_SWAP_AB_XY', backend.write_env(game, 'handheld', 512, swap_ab_xy=False).read_text())
 
     def test_thermal_cap_can_be_left_off(self):
         with tempfile.TemporaryDirectory() as folder:

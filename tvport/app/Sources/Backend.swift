@@ -21,7 +21,10 @@ struct Signing: Codable, Hashable {
 
 struct GameInfo: Codable {
     let folder: String
+    let build_folder: String?
+    let build_path: String?
     let title_id: String
+    let artwork_title_id: String?
     let name: String
     let version: String
     let sources: [String]
@@ -146,6 +149,7 @@ enum Backend {
         environment["PATH"] = "/opt/homebrew/bin:/usr/local/bin:/usr/local/share/dotnet:\(dotnet):/usr/bin:/bin:/usr/sbin:/sbin"   // an app opened from Finder has no shell PATH: the engine needs xcodegen, dotnet and glslang
         environment["PYTHONUNBUFFERED"] = "1"
         environment["TVPORT_DATA"] = data.path
+        environment["TVPORT_DEFAULT_BUILD_FOLDER"] = UserDefaults.standard.string(forKey: "DefaultBuildFolder") ?? ""
         p.environment = environment
         return p
     }

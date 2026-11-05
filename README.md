@@ -1,5 +1,16 @@
 # TVPort
 
+This fork builds on [the original TVPort](https://github.com/68hctmzzjf-svg/TVPort) with improvements to the Mac app’s library, artwork, controller settings and save management. It keeps the original TVPort and nxnative engine foundations, with the following additions:
+
+- **Manage Saves:** browse supported games installed on your Apple TV, back up one game or all available saves, restore previous backups, and import compatible saves from Ryujinx or other emulators and native Mac games. Imports and restores back up the current save first, verify the copied files, and attempt recovery if a transfer fails. Backups can be opened in Finder and optionally stored in iCloud Drive.
+- **Game artwork:** automatic artwork lookup, custom images, and controls for scaling and cropping Apple TV icons. Artwork thumbnails also appear in the library and save manager. The lookup is adapted from NX2Apple, with its MIT attribution included; downloaded cover artwork is not bundled with the app or added by this fork to the repository.
+- **Controller and frame-rate settings:** a per-game A/B and X/Y swap, clearer FPS-counter explanations, and a visible frame-rate selector that stays disabled until the game supports it.
+- **Build locations:** choose a default build folder in Settings, then select that folder or a location next to the original files for each game. Existing builds are copied when changing location, with the originals kept.
+- **Mac interface improvements:** a fixed-width sidebar, clearer setup status, revised buttons and spacing, game versions in save-manager headings, File-menu access to Settings and Manage Saves, and clearer Last Run Stats and Show Log actions. Removing the last library game no longer leaves the detail view referencing a deleted entry.
+- **Safer automatic save recovery:** installation checks for both working and persistent saves before restoring a backup, and skips recovery when it cannot verify that saves are absent.
+
+Download [TVPort 1.2](https://github.com/0to101/TVPort/releases/tag/v1.2) for these changes, or build this fork from source. The original project’s release downloads do not include them. See [the TVPort guide](tvport/README.md) for build instructions and details.
+
 Play your own Nintendo Switch games on an Apple TV 4K. TVPort is a fork of [nxnative](https://github.com/seedds/nxnative) by seedds. It adds an Apple TV build of the engine and a Mac app that turns a game you own into an Apple TV app and installs it on your TV, with no command line.
 
 Like nxnative, it is not an emulator: the game's own code runs on the Apple chip, and its graphics are rebuilt on Metal. Nothing from any game, and no keys, are in this repository or its releases. The project is not affiliated with Nintendo, Apple or any game publisher. Use it only with games you own and dumped from your own console.
@@ -31,7 +42,7 @@ Many more games run on iPhone and iPad with nxnative; see the [games table](dm/g
 1. **The Mac:** Apple silicon, with macOS 26.6 or later and Xcode 27.1 (see [Build from the command line](#build-from-the-command-line) below for why 27.1).
 2. **The Apple TV:** an Apple TV 4K with tvOS 26 or later, in developer mode and paired with Xcode (**Window > Devices and Simulators**).
 3. **An Apple ID signed in to Xcode** (**Settings > Accounts**). A free one works, but its installs stop opening after 7 days. **Build & Install** renews them.
-4. **TVPort:** download `TVPort-<version>.zip` from [Releases](https://github.com/68hctmzzjf-svg/TVPort/releases), unzip it and open TVPort.app. It is signed ad hoc and not notarized, so the first time macOS refuses it: open **System Settings > Privacy & Security** and press **Open Anyway**.
+4. **TVPort:** download `TVPort-1.2.zip` from [this fork’s releases](https://github.com/0to101/TVPort/releases), unzip it and open TVPort.app. It is signed ad hoc and not notarized, so the first time macOS refuses it: open **System Settings > Privacy & Security** and press **Open Anyway**.
 5. **First run:** TVPort sets itself up and lists anything else the Mac needs in **Setup** (Homebrew packages and the .NET SDK).
 6. **Build your game:** add your game's folder and press **Build & Install**. A game's first build takes 30 to 60 minutes. After that a build takes a few minutes.
 
@@ -39,7 +50,7 @@ Many more games run on iPhone and iPad with nxnative; see the [games table](dm/g
 
 ## Credits
 
-nxnative is by [seedds](https://github.com/seedds/nxnative), under the MIT License ([LICENSE](LICENSE)). TVPort's additions are under the same license.
+nxnative is by [seedds](https://github.com/seedds/nxnative), under the MIT License ([LICENSE](LICENSE)). The original TVPort is by [68hctmzzjf-svg](https://github.com/68hctmzzjf-svg/TVPort). TVPort's additions are under the same license. Artwork lookup includes code adapted from [NX2Apple](https://github.com/LNPANDY/NX2Apple); its [MIT notice](tvport/app/Resources/NX2Apple-LICENSE.txt) is included.
 
 ---
 
