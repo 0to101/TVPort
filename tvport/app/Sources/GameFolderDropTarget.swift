@@ -4,6 +4,7 @@ import SwiftUI
 struct GameFolderDropTarget: ViewModifier {
     let addFolder: (URL) -> Void
     @State private var isTargeted = false
+    @State private var showingDropError = false
 
     func body(content: Content) -> some View {
         content
@@ -22,13 +23,15 @@ struct GameFolderDropTarget: ViewModifier {
                 }
             }
             .dropDestination(for: URL.self) { urls, _ in
-                let folders = urls.filter { url in
-                    guard url.isFileURL,
-                          let values = try? url.resourceValues(forKeys: [.isDirectoryKey, .isPackageKey]) else { return false }
-                    return values.isDirectory == true && values.isPackage != true
-                }
-                for folder in folders { addFolder(folder.standardizedFileURL) }
+                let folders = GameDropImport.folders(from: urls)
+                showingDropError = folders.isEmpty
+                for folder in folders { addFolder(folder) }
                 return !folders.isEmpty
             } isTargeted: { isTargeted = $0 }
+            .alert("Couldn’t add this item", isPresented: $showingDropError) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text("Drop a game folder or an .nsp, .xci, .nsz or .xcz file. Make sure the drive is connected and the item is accessible.")
+            }
     }
 }

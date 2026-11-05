@@ -86,7 +86,7 @@ struct ContentView: View {
             .toolbar(removing: .sidebarToggle)
             .toolbar {
                 Button { choosingFolder = true } label: { Label("Add Game", systemImage: "plus") }
-                    .help("Add a folder holding your game's .nsp or .xci files")
+                    .help("Choose a game folder, or drop a game file or folder into the sidebar")
                 Button { openWindow(id: "manage-saves") } label: { Label("Manage Saves", systemImage: "externaldrive.badge.timemachine") }
                     .help("Import, export and restore saves for games installed on an Apple TV")
                     .disabled(library.isBusy)
@@ -100,7 +100,7 @@ struct ContentView: View {
                     ContentUnavailableView {
                         Label("No games yet", systemImage: "appletv")
                     } description: {
-                        Text("Add or drop a folder holding your own game's .nsp or .xci files, with any update or DLC.")
+                        Text("Drop a game folder or an .nsp, .xci, .nsz or .xcz file here. A dropped file adds its containing folder, including updates and DLC.")
                     } actions: {
                         Button("Add Game Folder…") { choosingFolder = true }.buttonStyle(.borderedProminent)
                     }
