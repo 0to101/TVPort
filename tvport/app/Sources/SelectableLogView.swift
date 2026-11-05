@@ -4,18 +4,25 @@ import SwiftUI
 /// One native text document lets Select All and Copy span the entire build log.
 struct SelectableLogView: NSViewRepresentable {
     let text: String
+    @Environment(\.colorScheme) private var colorScheme
 
     func makeNSView(context: Context) -> LogTextScrollView {
         LogTextScrollView()
     }
 
     func updateNSView(_ view: LogTextScrollView, context: Context) {
+        view.setDarkAppearance(colorScheme == .dark)
         view.setLog(text)
     }
 }
 
 final class LogTextScrollView: NSScrollView {
     let logTextView = NSTextView()
+    private var logColor = NSColor.black
+    private let logFont = NSFont.monospacedSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular)
+    private var logAttributes: [NSAttributedString.Key: Any] {
+        [.foregroundColor: logColor, .font: logFont]
+    }
 
     init() {
         super.init(frame: .zero)
@@ -28,8 +35,12 @@ final class LogTextScrollView: NSScrollView {
         logTextView.isSelectable = true
         logTextView.isRichText = false
         logTextView.drawsBackground = false
-        logTextView.font = .monospacedSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular)
-        logTextView.textColor = .labelColor
+        // SwiftUI supplies the appearance; apply it to stored text as well as
+        // typing attributes, since direct textStorage appends bypass typing.
+        logTextView.usesAdaptiveColorMappingForDarkAppearance = false
+        logTextView.font = logFont
+        logTextView.textColor = logColor
+        logTextView.typingAttributes = logAttributes
         logTextView.textContainerInset = NSSize(width: 0, height: 2)
         logTextView.textContainer?.lineFragmentPadding = 0
         logTextView.isVerticallyResizable = true
@@ -43,6 +54,16 @@ final class LogTextScrollView: NSScrollView {
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
+    func setDarkAppearance(_ dark: Bool) {
+        let color: NSColor = dark ? .white : .black
+        guard color != logColor else { return }
+        logColor = color
+        logTextView.textColor = color
+        logTextView.typingAttributes = logAttributes
+        logTextView.textStorage?.addAttributes(logAttributes,
+            range: NSRange(location: 0, length: (logTextView.string as NSString).length))
+    }
+
     func setLog(_ text: String) {
         let oldText = logTextView.string
         guard text != oldText else { return }
@@ -55,10 +76,10 @@ final class LogTextScrollView: NSScrollView {
         let oldLength = (oldText as NSString).length
         let newLength = (text as NSString).length
         if text.hasPrefix(oldText) {
-            logTextView.textStorage?.replaceCharacters(in: NSRange(location: oldLength, length: 0),
-                with: (text as NSString).substring(from: oldLength))
+            logTextView.textStorage?.append(NSAttributedString(
+                string: (text as NSString).substring(from: oldLength), attributes: logAttributes))
         } else {
-            logTextView.string = text
+            logTextView.textStorage?.setAttributedString(NSAttributedString(string: text, attributes: logAttributes))
         }
         let start = min(selection.location, newLength)
         logTextView.setSelectedRange(NSRange(location: start, length: min(selection.length, newLength - start)))
