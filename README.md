@@ -1,9 +1,11 @@
 # TVPort
 
+<img src="docs/images/tvport/app-icon.png" alt="TVPort app icon" width="128" height="128">
+
 This fork builds on [the original TVPort](https://github.com/68hctmzzjf-svg/TVPort) with improvements to the Mac app’s library, artwork, controller settings and save management. It keeps the original TVPort and nxnative engine foundations, with the following additions:
 
-- **Manage Saves:** browse supported games installed on your Apple TV, back up one game or all available saves, restore previous backups, and import compatible saves from Ryujinx or other emulators and native Mac games. Imports and restores back up the current save first, verify the copied files, and attempt recovery if a transfer fails. Backups can be opened in Finder and optionally stored in iCloud Drive.
-- **Offline backup browsing:** see games with saved backups and open their save files in Finder even when the Apple TV is disconnected. Import, restore and new backups become available when the TV and game can be reached.
+- **Manage Saves:** browse supported games installed on your Apple TV, back up one game or all available saves, restore previous backups, and import compatible saves from Ryujinx or other emulators and native Mac games. Import adds a separate local copy without touching the Apple TV. Restore lets you choose an existing player/save slot, backs up its current save first, verifies the transfer, and attempts recovery if it fails. Backups can be opened in Finder and optionally stored in iCloud Drive.
+- **Offline backup browsing:** see games with saved backups and open their save files in Finder even when the Apple TV is disconnected. Local imports work offline too. Restore and new Apple TV backups become available when the TV and game can be reached.
 - **Game artwork:** automatic artwork lookup, custom images, and controls for scaling and cropping Apple TV icons. Artwork thumbnails also appear in the library and save manager. The lookup is adapted from NX2Apple, with its MIT attribution included; downloaded cover artwork is not bundled with the app or added by this fork to the repository.
 - **Controller and frame-rate settings:** a per-game A/B and X/Y swap, clearer FPS-counter explanations, and a visible frame-rate selector that stays disabled until the game supports it.
 - **Build locations:** choose a default build folder in Settings, then select that folder or a location next to the original files for each game. Existing builds are copied when changing location, with the originals kept.
@@ -15,6 +17,14 @@ Download [TVPort 1.2](https://github.com/0to101/TVPort/releases/tag/v1.2) for th
 Play your own Nintendo Switch games on an Apple TV 4K. TVPort is a fork of [nxnative](https://github.com/seedds/nxnative) by seedds. It adds an Apple TV build of the engine and a Mac app that turns a game you own into an Apple TV app and installs it on your TV, with no command line.
 
 Like nxnative, it is not an emulator: the game's own code runs on the Apple chip, and its graphics are rebuilt on Metal. Nothing from any game, and no keys, are in this repository or its releases. The project is not affiliated with Nintendo, Apple or any game publisher. Use it only with games you own and dumped from your own console.
+
+## App preview
+
+These screenshots use fictional games, dummy artwork and sample save records. No real games or personal save data are shown.
+
+![TVPort game library and build settings with dummy games](docs/images/tvport/main-window.png)
+
+![Manage Saves showing local imports, Apple TV backups and safety backups](docs/images/tvport/manage-saves.png)
 
 ## What TVPort adds
 
