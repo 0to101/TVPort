@@ -9,6 +9,7 @@ This fork builds on [the original TVPort](https://github.com/68hctmzzjf-svg/TVPo
 - **Game artwork:** automatic artwork lookup, custom images, and controls for scaling and cropping Apple TV icons. Artwork thumbnails also appear in the library and save manager. The lookup is adapted from NX2Apple, with its MIT attribution included; downloaded cover artwork is not bundled with the app or added by this fork to the repository.
 - **Controller and frame-rate settings:** a per-game A/B and X/Y swap, clearer FPS-counter explanations, and a visible frame-rate selector that stays disabled until the game supports it.
 - **Build locations:** choose a default build folder in Settings, then select that folder or a location next to the original files for each game. Existing builds are copied when changing location, with the originals kept.
+- **New app icon:** a red TV-and-controller design with built-in dark and clear appearances that follow macOS icon settings.
 - **Mac interface improvements:** a fixed-width sidebar, clearer setup status, revised buttons and spacing, game versions in save-manager headings, File-menu access to Settings and Manage Saves, and clearer Last Run Stats and Show Log actions. Removing the last library game no longer leaves the detail view referencing a deleted entry.
 - **Safer automatic save recovery:** installation checks for both working and persistent saves before restoring a backup, and skips recovery when it cannot verify that saves are absent.
 

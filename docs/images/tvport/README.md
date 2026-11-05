@@ -1,7 +1,7 @@
 # TVPort previews
 
-The screenshots show the real TVPort interface with an isolated demonstration library, fictional Game 1–3 entries, generated dummy artwork and sample backup records. No real game artwork, keys, device identifiers or personal save files are included.
+The screenshots show TVPort with an isolated demonstration library, fictional Game 1–3 entries, dummy artwork and sample backup records.
 
-`app-icon.png` is a preview of the app icon in `tvport/app/Resources/Assets.xcassets/AppIcon.appiconset`. It was created with the built-in image-generation tool and resized for the macOS app-icon slots.
+`app-icon.png` shows the default red appearance of the app’s native Icon Composer document in `tvport/app/Resources/TVPortIcon.icon`. The app embeds the same layered artwork for macOS dark and clear appearances. Only the red default is displayed on the project page.
 
-Final design prompt: a minimalist macOS rounded-square tile in vivid red (#E60012), a white rounded TV outline and stand, and a white game-controller silhouette inside the screen. Its D-pad and two round buttons are red cutouts. Preserve generous spacing and transparent outside corners, with no text or brand logos.
+The design began with the built-in image-generation tool: a red rounded-square tile, white TV outline and stand, and white controller with button cutouts. The final artwork uses a crisp SVG foreground and native Icon Composer materials. The red background was selected by the project owner in Icon Composer.

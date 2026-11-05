@@ -33,11 +33,9 @@ struct ArtworkFramingControls: View {
                 }
                 Slider(value: binding(\.scale), in: 1...3, step: 0.05)
                     .accessibilityLabel("Artwork zoom")
-                Text("Horizontal position").font(.caption)
                 Slider(value: binding(\.x), in: -1...1) {
                     Text("Horizontal position")
                 } minimumValueLabel: { Text("Left") } maximumValueLabel: { Text("Right") }
-                Text("Vertical position").font(.caption)
                 Slider(value: binding(\.y), in: -1...1) {
                     Text("Vertical position")
                 } minimumValueLabel: { Text("Top") } maximumValueLabel: { Text("Bottom") }
