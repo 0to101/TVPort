@@ -41,7 +41,7 @@ struct Game: Codable, Identifiable, Hashable {
     var coolWhenHot: Bool?     // frame-step games hold 30 fps while the TV is thermally serious; nil = on (the engine's default)
     var fpsTarget: Int?        // 30 or 60 in place of the profile's fps_target; nil = the profile's
     var swapABXY: Bool?       // nil = off, including libraries saved before this option existed
-    var showFPS = true
+    var showFPS = false
     var players: String?
     var id: String { folder }
 }

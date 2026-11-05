@@ -419,7 +419,7 @@ struct SettingsForm: View {
                     Text("When tvOS reports the TV as hot, it lowers the chip's speed, the GPU to about a third, whatever the game does, and this makes the game hold 30 fps so the TV cools down sooner. Off, the game keeps trying for 60, which it can then rarely reach, and the TV stays hot and slow for longer. Takes effect at the next Build & Install.")
                         .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 }
-                Toggle("Frame-rate counter", isOn: binding(\.showFPS, default: true))
+                Toggle("Frame-rate counter", isOn: binding(\.showFPS, default: false))
                 Text("Shows how many frames reach the screen each second (FPS) while you play, so you can monitor performance. This only displays the frame rate; it does not change the FPS limit. Takes effect at the next Build & Install.")
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
