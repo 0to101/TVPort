@@ -40,6 +40,14 @@ Add a folder holding your game's `.nsp` or `.xci` files, pick your Apple TV, and
 
 **Hold 30 fps when the Apple TV is hot** appears for a game with a frame step (`# FPS_STATE_OFF` in the main's fixups; `frame_step_supported`), and it is on by default. The Apple TV 4K has no fan. When tvOS reports thermal state serious, it lowers the chip's clocks itself, below any app: on iPhones the GPU runs at about a third of its speed ([A thermally serious iPhone holds 30 fps](../docs/reference/frame-rate.md#a-thermally-serious-iphone-holds-30-fps)). No public API turns that off, and it is what protects the TV. With this on, the frame step holds 30 fps until the TV has been back to fair for 30 s. Turned off, the build writes `DM_THERMAL_CAP=0`, and the game keeps trying for 60 fps. It then rarely reaches 60 at the lower clocks, and the TV stays hot, and slow, for longer. Tears of the Kingdom reached serious within 20 to 40 s of a launch in most runs on 2026-11-03. That throttling also slows its loading, which runs on the CPU. What keeps a TV cooler is less work and air around it: a lower 3D resolution and frame rate, and a place that is not shut in a cabinet or set on another warm device.
 
+### Separate Top Shelf cover
+
+**Top Shelf Cover** accepts PNG or JPEG images. The drop area previews the wide 29:9 format (recommended 2320 × 720 pixels) with independent framing, zoom and horizontal/vertical position controls. It uses the game artwork by default; **Use Game Artwork** removes the custom cover. The generated app includes standard and wide Top Shelf sizes. Changes apply at the next Build & Install.
+
+### Updates and DLC from other folders
+
+Drop NSP, XCI, NSZ or XCZ updates/DLC onto a game in the sidebar or its game page, or use **Updates & DLC → Add Files**. TVPort reads package metadata with your keys and rejects packages for another game or region. Original files stay where they are; reconnect external drives before building. Removing an attachment keeps the original file. Build & Install applies attached content and removes detached content from the next app build. The engine selects the newest available update/DLC version. Content already in the original game folder is still discovered there.
+
 ## The packed app
 
 `python3 scripts/package_tvport.py` makes `tvport/dist/TVPort.app` and `TVPort-<version>.zip` (about 50 MB), an app that runs on any Mac without this checkout. It carries:

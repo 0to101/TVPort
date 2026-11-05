@@ -13,18 +13,23 @@ struct ArtworkCrop: Codable, Hashable {
 struct ArtworkFramingControls: View {
     @EnvironmentObject var library: Library
 
-    private var hasArtwork: Bool { library.artworkPath != nil }
+    var topShelf = false
+    private var crop: ArtworkCrop? { topShelf ? library.current?.topShelfCrop : library.current?.artworkCrop }
+    private var hasArtwork: Bool { library.artworkPath != nil || (topShelf && library.current?.topShelfArtwork != nil) }
+    private func setCrop(_ value: ArtworkCrop?) {
+        if topShelf { library.setTopShelfCrop(value) } else { library.setArtworkCrop(value) }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             Picker("Framing", selection: Binding(
-                get: { library.current?.artworkCrop != nil },
-                set: { library.setArtworkCrop($0 ? ArtworkCrop() : nil) }
+                get: { crop != nil },
+                set: { setCrop($0 ? ArtworkCrop() : nil) }
             )) {
                 Text("Automatic").tag(false)
                 Text("Crop to fill").tag(true)
             }
-            if let crop = library.current?.artworkCrop {
+            if let crop {
                 HStack {
                     Text("Zoom")
                     Spacer()
@@ -39,7 +44,7 @@ struct ArtworkFramingControls: View {
                 Slider(value: binding(\.y), in: -1...1) {
                     Text("Vertical position")
                 } minimumValueLabel: { Text("Top") } maximumValueLabel: { Text("Bottom") }
-                Button("Reset Crop") { library.setArtworkCrop(ArtworkCrop()) }
+                Button("Reset Crop") { setCrop(ArtworkCrop()) }
                     .disabled(crop == ArtworkCrop())
             }
         }
@@ -47,10 +52,10 @@ struct ArtworkFramingControls: View {
     }
 
     private func binding(_ key: WritableKeyPath<ArtworkCrop, Double>) -> Binding<Double> {
-        Binding(get: { (library.current?.artworkCrop ?? ArtworkCrop())[keyPath: key] }, set: { value in
-            var crop = library.current?.artworkCrop ?? ArtworkCrop()
+        Binding(get: { (crop ?? ArtworkCrop())[keyPath: key] }, set: { value in
+            var crop = self.crop ?? ArtworkCrop()
             crop[keyPath: key] = value
-            library.setArtworkCrop(crop)
+            setCrop(crop)
         })
     }
 }

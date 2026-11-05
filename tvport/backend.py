@@ -214,6 +214,7 @@ class Game:
             saved = next((item for item in library if isinstance(item, dict) and Path(item.get('folder', '')).expanduser().resolve() == self.folder), {})
         except (OSError, ValueError, TypeError):
             pass
+        self.addons = saved.get('addons') or []
         chosen = saved.get('buildFolder') or os.environ.get('TVPORT_DEFAULT_BUILD_FOLDER')
         if saved.get('buildNextToOriginal') is not None:
             chosen = None if saved['buildNextToOriginal'] else os.environ.get('TVPORT_DEFAULT_BUILD_FOLDER')
@@ -246,9 +247,28 @@ class Game:
 
     @property
     def package(self) -> Optional[str]:
+        content = self.prepared_content()
+        selected = content.get('package')
+        if selected and re.fullmatch(r'v\d+', selected) and (self.build / f'patched_{selected}').is_dir():
+            return selected
         patched = sorted(self.build.glob('patched_*')) if self.build else []
         patched = [p for p in patched if p.is_dir()]
-        return patched[-1].name[len('patched_'):] if patched else None
+        return max(patched, key=lambda p: int(p.name.removeprefix('patched_v')) if p.name.removeprefix('patched_v').isdigit() else -1).name[len('patched_'):] if patched else None
+
+    def prepared_content(self) -> dict:
+        path = self.build / 'prepared-content.json' if self.build else None
+        return json.loads(path.read_text()) if path and path.is_file() else {}
+
+    def input_signature(self) -> str:
+        paths = {p.resolve() for p in self.folder.iterdir() if p.is_file() and p.suffix.lower() in SOURCE_SUFFIXES and not p.name.startswith('._')}
+        paths.update(Path(item['path']).expanduser().resolve() for item in self.addons)
+        records = []
+        for path in sorted(paths):
+            if not path.is_file():
+                raise Failure(f'Update or DLC is unavailable: {path}. Reconnect its drive or remove it from this game.')
+            stat = path.stat()
+            records.append((str(path), stat.st_size, stat.st_mtime_ns))
+        return hashlib.sha256(json.dumps(records).encode()).hexdigest()
 
     def fixup_declared(self, key: str) -> bool:
         """Whether the rewritten main's fixups declare `# <key>`, as the iPhone launcher's fixups: conditions read them (dm/games/settings.tsv)"""
@@ -489,9 +509,39 @@ def cmd_inspect(args) -> None:
                       'keys': str(find_keys(game) or '') or None, **backup_info(latest_backup(game))}))
 
 
+def check_addons(game: Game, sources, keys=None, python=None) -> dict:
+    keys = keys if keys and keys.is_file() else find_keys(game)
+    if not keys:
+        raise Failure('Choose your prod.keys file in this game’s settings first, so TVPort can verify the update or DLC.')
+    command = [python or engine_python(), REPO / 'scripts/inspect_game_addons.py', game.folder, '--keys', keys]
+    if game.title_id:
+        command += ['--expected', game.title_id]
+    for path in dict.fromkeys(map(str, sources)):
+        command += ['--source', path]
+    result = run(command)
+    try:
+        answer = json.loads(result.stdout)
+    except ValueError:
+        raise Failure('Could not inspect the update or DLC. Check your keys, file access and .NET setup.') from None
+    if result.returncode or answer.get('error'):
+        raise Failure(answer.get('error') or 'Could not verify the update or DLC.')
+    return answer
+
+
+def cmd_check_addons(args) -> None:
+    print(json.dumps(check_addons(Game(args.folder), args.source, args.keys)))
+
+
 def artwork_env(args) -> dict:
     """Shared crop configuration for previews and the generated Apple TV assets."""
-    return {'DM_ICON_CROP_SCALE': str(args.art_scale), 'DM_ICON_CROP_X': str(args.art_x), 'DM_ICON_CROP_Y': str(args.art_y)}
+    env = {'DM_ICON_CROP_SCALE': str(args.art_scale), 'DM_ICON_CROP_X': str(args.art_x), 'DM_ICON_CROP_Y': str(args.art_y)}
+    if hasattr(args, 'shelf_scale'):
+        env.update(DM_SHELF_CROP_SCALE=str(args.shelf_scale), DM_SHELF_CROP_X=str(args.shelf_x), DM_SHELF_CROP_Y=str(args.shelf_y))
+    if getattr(args, 'shelf_art', None):
+        env['DM_TOP_SHELF_ART'] = str(args.shelf_art)
+    elif hasattr(args, 'shelf_art'):
+        env['DM_TOP_SHELF_ART'] = ''
+    return env
 
 
 def art_scale_arg(text: str) -> float:
@@ -509,7 +559,7 @@ def art_position_arg(text: str) -> float:
 
 
 def cmd_preview(args) -> None:
-    result = run(['xcrun', 'swift', REPO / 'dm/ios/tools/tv_icon.swift', args.art, '--preview', args.out], env={**os.environ, **artwork_env(args)})
+    result = run(['xcrun', 'swift', REPO / 'dm/ios/tools/tv_icon.swift', args.art, '--shelf-preview' if args.top_shelf else '--preview', args.out], env={**os.environ, **artwork_env(args)})
     if result.returncode:
         raise Failure(result.stderr.strip() or 'The artwork could not be read')
     print(json.dumps({'preview': str(args.out)}))
@@ -715,6 +765,10 @@ def prepare_game(game: Game, keys: Optional[Path], team: str, python: str) -> Ga
     if not keys:
         raise Failure('This game has not been built yet, so it needs your prod.keys file')
     command = [python, REPO / 'scripts/build_ipa_from_nsp.py', game.folder, '-k', keys, '--prepare-xcode', '--keep-extracted', '--gpu', 'none', '--romfs', 'separate', '--allow-other-metal', '--progress', 'lines']
+    if game.title_id:
+        command += ['--title-id', game.title_id]
+    for path in dict.fromkeys(item['path'] for item in game.addons):
+        command += ['--extra-package', path]
     if game.build_parent != game.folder:
         command += ['--build-root', game.build_parent]
     if team:
@@ -723,6 +777,7 @@ def prepare_game(game: Game, keys: Optional[Path], team: str, python: str) -> Ga
     game = Game(game.folder)
     if not game.prepared:
         raise Failure('The engine finished without shaders or game files for this game. See the log above.')
+    game.save_state(source_signature=game.input_signature())
     return game
 
 
@@ -730,11 +785,12 @@ def generate_project(game: Game, args, team: str, bundle: str, python: str) -> P
     stage('Generating the Apple TV project')
     restore_tables(game)
     env = profile_env(game)
-    env.update(GAME=game.title_id, W=str(game.build), PATCHED=str(game.build / f'patched_{game.package}'), ROMFS=str(game.romfs), MSL_IOS=str(game.shaders), AOC='',
+    aoc = game.build / 'aoc'
+    env.update(GAME=game.title_id, W=str(game.build), PATCHED=str(game.build / f'patched_{game.package}'), ROMFS=str(game.romfs), MSL_IOS=str(game.shaders), AOC=str(aoc) if aoc.is_dir() and game.prepared_content().get('dlc', True) else '',
                DM_TVOS='1', DM_COPY_ROMFS='NO', DM_SHOW_FPS='1' if args.fps else '0', DM_ENV_FILE=str(write_env(game, args.mode, args.texture_cap, args.players, args.render_scale, not args.no_thermal_cap, args.fps_target, args.swap_ab_xy)), DM_BUNDLE_ID=bundle, DM_TEAM_ID=team,
                DM_XCODE_PROJECT_DIR=str(game.build / 'tvport-xcode'), DM_XCODE_DERIVED_DATA=str(game.build / 'tvport-derived'), FONT_PY=python)
     env.update(artwork_env(args))
-    art = args.art or game.icon
+    art = args.art or game.icon or args.shelf_art
     if art:
         env['DM_ICON'] = str(art)
     stream(['bash', REPO / 'dm/ios/tools/build_ipa.sh', '--prepare-xcode'], env=env, cwd=REPO)
@@ -851,7 +907,12 @@ def cmd_build(args) -> None:
         prune_engines(REPO)
     python = engine_python()
     os.environ['PATH'] = os.pathsep.join([str(Path(python).parent), os.environ.get('PATH', '')])   # the engine's own `python3` calls (build_ipa.sh) take this one, not the system's 3.9
-    if not game.prepared:
+    signature = game.input_signature()
+    if game.addons:
+        stage('Checking updates and DLC')
+        check_addons(game, [item['path'] for item in game.addons], args.keys, python)
+    previous_signature = game.state().get('source_signature')
+    if not game.prepared or ((previous_signature or game.addons) and previous_signature != signature):
         game = prepare_game(game, args.keys, team, python)
     bundle = game.bundle_id(team)
     if args.device:
@@ -864,7 +925,7 @@ def cmd_build(args) -> None:
     project = generate_project(game, args, team, bundle, python)
     bundle_shaders(game, project)
     compile_app(game, project, args.device)
-    game.save_state(bundle_id=bundle, art=str(args.art) if args.art else None, mode=args.mode, texture_cap=args.texture_cap, render_scale=args.render_scale)
+    game.save_state(bundle_id=bundle, art=str(args.art) if args.art else None, mode=args.mode, texture_cap=args.texture_cap, render_scale=args.render_scale, source_signature=signature)
     if args.device:
         install(game, args.device, bundle)
         restored = restore_saves(game, args.device, bundle)
@@ -1084,9 +1145,14 @@ def main() -> int:
         command.add_argument('--icloud', action='store_true')
     inspect = commands.add_parser('inspect')
     inspect.add_argument('folder', type=Path)
+    addons = commands.add_parser('check-addons')
+    addons.add_argument('folder', type=Path)
+    addons.add_argument('--source', action='append', required=True)
+    addons.add_argument('--keys', type=Path)
     preview = commands.add_parser('preview')
     preview.add_argument('--art', type=Path, required=True)
     preview.add_argument('--out', type=Path, required=True)
+    preview.add_argument('--top-shelf', action='store_true')
     build = commands.add_parser('build')
     build.add_argument('folder', type=Path)
     build.add_argument('--keys', type=Path)
@@ -1103,6 +1169,10 @@ def main() -> int:
     build.add_argument('--players', default='')
     build.add_argument('--icloud', action='store_true')
     for command in (preview, build):
+        command.add_argument('--shelf-art', type=Path)
+        command.add_argument('--shelf-scale', type=art_scale_arg, default=0.0)
+        command.add_argument('--shelf-x', type=art_position_arg, default=0.0)
+        command.add_argument('--shelf-y', type=art_position_arg, default=0.0)
         command.add_argument('--art-scale', type=art_scale_arg, default=0.0)
         command.add_argument('--art-x', type=art_position_arg, default=0.0)
         command.add_argument('--art-y', type=art_position_arg, default=0.0)
@@ -1130,7 +1200,7 @@ def main() -> int:
             if args.command == 'setup':
                 stage('Unpacking the engine')
             REPO = unpack_engine(HERE, DATA)
-        {'devices': cmd_devices, 'inspect': cmd_inspect, 'preview': cmd_preview, 'build': cmd_build, 'backup': cmd_backup, 'launch': cmd_launch, 'diagnose': cmd_diagnose,
+        {'devices': cmd_devices, 'inspect': cmd_inspect, 'check-addons': cmd_check_addons, 'preview': cmd_preview, 'build': cmd_build, 'backup': cmd_backup, 'launch': cmd_launch, 'diagnose': cmd_diagnose,
          'doctor': cmd_doctor, 'setup': cmd_setup, 'autobackup': cmd_autobackup,
          **{name: cmd_save_import for name in ('installed-games', 'saved-games', 'save-targets', 'save-source', 'save-history', 'store-save', 'import-save', 'export-save', 'export-all-saves', 'restore-save')}}[args.command](args)
     except Failure as failure:

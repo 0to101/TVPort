@@ -15,22 +15,22 @@ func loadImage(_ path: String) -> CGImage {
     return image
 }
 
-// Crop the source once at the icon's 5:3 aspect ratio. Every asset and preview then uses the same artwork.
+// Crop at the target aspect ratio; icon and independent Top Shelf crops share this geometry.
 // Positions select from the available overflow: -1 left/top, 0 center, +1 right/bottom.
-func cropArtwork(_ image: CGImage, environment: [String: String]) -> CGImage {
+func cropArtwork(_ image: CGImage, environment: [String: String], prefix: String = "DM_ICON", ratio: Double = 5.0 / 3.0) -> CGImage {
     func number(_ key: String, fallback: Double, range: ClosedRange<Double>) -> Double {
         guard let raw = environment[key] else { return fallback }
         guard let n = Double(raw), n.isFinite, range.contains(n) else { fail("invalid \(key)") }
         return n
     }
-    let scale = number("DM_ICON_CROP_SCALE", fallback: 0, range: 0...3)
+    let scale = number("\(prefix)_CROP_SCALE", fallback: 0, range: 0...3)
     if scale == 0 { return image }
     guard scale >= 1 else { fail("crop scale must be at least 1") }
-    let x = number("DM_ICON_CROP_X", fallback: 0, range: -1...1)
-    let y = number("DM_ICON_CROP_Y", fallback: 0, range: -1...1)
+    let x = number("\(prefix)_CROP_X", fallback: 0, range: -1...1)
+    let y = number("\(prefix)_CROP_Y", fallback: 0, range: -1...1)
     let width = Double(image.width), height = Double(image.height)
-    let cropWidth = min(width, height * 5 / 3) / scale
-    let cropHeight = cropWidth * 3 / 5
+    let cropWidth = min(width, height * ratio) / scale
+    let cropHeight = cropWidth / ratio
     let rect = CGRect(x: (width - cropWidth) * (x + 1) / 2,
                       y: (height - cropHeight) * (y + 1) / 2,
                       width: cropWidth, height: cropHeight)
@@ -167,12 +167,20 @@ if args[2] == "--preview" {
     exit(0)
 }
 
+let environment = ProcessInfo.processInfo.environment
+let customShelf = environment["DM_TOP_SHELF_ART"].flatMap { $0.isEmpty ? nil : loadImage($0) }
+let shelfArt = cropArtwork(customShelf ?? art, environment: environment, prefix: "DM_SHELF", ratio: 29.0 / 9.0)
+if args[2] == "--shelf-preview" {
+    guard args.count == 4 else { fail("--shelf-preview needs an output path") }
+    writePNG(shelf(shelfArt, 1160, 360), URL(fileURLWithPath: args[3]))
+    exit(0)
+}
 let catalog = URL(fileURLWithPath: args[2]), brand = catalog.appendingPathComponent("AppIcon.brandassets")
 try? FileManager.default.removeItem(at: brand)
 writeJSON(["info": info], catalog.appendingPathComponent("Contents.json"))
 writeJSON(["info": info, "assets": [
     ["idiom": "tv", "size": "400x240", "role": "primary-app-icon", "filename": imageStack(art, "App Icon", 400, 240, [1, 2], in: brand)],
     ["idiom": "tv", "size": "1280x768", "role": "primary-app-icon", "filename": imageStack(art, "App Icon - App Store", 1280, 768, [1], in: brand)],
-    ["idiom": "tv", "size": "1920x720", "role": "top-shelf-image", "filename": shelfSet(art, "Top Shelf Image", 1920, 720, in: brand)],
-    ["idiom": "tv", "size": "2320x720", "role": "top-shelf-image-wide", "filename": shelfSet(art, "Top Shelf Image Wide", 2320, 720, in: brand)],
+    ["idiom": "tv", "size": "1920x720", "role": "top-shelf-image", "filename": shelfSet(shelfArt, "Top Shelf Image", 1920, 720, in: brand)],
+    ["idiom": "tv", "size": "2320x720", "role": "top-shelf-image-wide", "filename": shelfSet(shelfArt, "Top Shelf Image Wide", 2320, 720, in: brand)],
 ]], brand.appendingPathComponent("Contents.json"))

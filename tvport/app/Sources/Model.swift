@@ -30,6 +30,8 @@ struct Game: Codable, Identifiable, Hashable {
     var titleID = ""
     var artwork: String?
     var artworkCrop: ArtworkCrop?
+    var topShelfArtwork: String?
+    var topShelfCrop: ArtworkCrop?
     var buildFolder: String?
     var buildNextToOriginal: Bool?
     var lastBuildPath: String?
@@ -43,6 +45,7 @@ struct Game: Codable, Identifiable, Hashable {
     var swapABXY: Bool?       // nil = off, including libraries saved before this option existed
     var showFPS = false
     var players: String?
+    var addons: [GameAddon]?
     var id: String { folder }
 }
 
@@ -58,6 +61,7 @@ final class Library: ObservableObject {
     @Published var automaticArtwork: String?
     @Published var artworkStatus = ""
     @Published var preview: NSImage?
+    @Published var topShelfPreview: NSImage?
     @Published var devices: [AppleTV] = []
     @Published var device: AppleTV.ID?
     @Published var team = ""
@@ -67,6 +71,8 @@ final class Library: ObservableObject {
     @Published var log: [String] = []
     @Published var diagnosis: Diagnosis?
     @Published var notice: String?
+    @Published var checkingAddonGame: String?
+    @Published var addonError: String?
     @Published var setup: SetupReport?
     @Published var settingUp = false
     @Published var setupStage = ""
@@ -99,7 +105,7 @@ final class Library: ObservableObject {
     var artworkPath: String? { current?.artwork ?? automaticArtwork ?? info?.icon }
 
     var current: Game? { games.first { $0.id == selection } }
-    var isBusy: Bool { run == .running || settingUp || transferringSaves }
+    var isBusy: Bool { run == .running || settingUp || transferringSaves || checkingAddonGame != nil }
     /// Unknown until the first check, which then does not hold anything back.
     var setupMissing: [Check] { setup?.checks.filter { !$0.ok } ?? [] }
     var bundleID: String? { info?.bundle_id }
@@ -131,10 +137,46 @@ final class Library: ObservableObject {
         if selection == game.id { selection = games.first?.id }
     }
 
+    func attachAddons(_ urls: [URL], to gameID: Game.ID) {
+        guard !isBusy, let game = games.first(where: { $0.id == gameID }), !urls.isEmpty else { return }
+        var arguments = ["check-addons", game.folder]
+        for url in urls where url.isFileURL { arguments += ["--source", url.path] }
+        guard arguments.count > 2 else { addonError = "Drop local update or DLC files, or a folder containing them."; return }
+        if let key = game.keys ?? keys { arguments += ["--keys", key] }
+        checkingAddonGame = gameID
+        Task {
+            defer { checkingAddonGame = nil }
+            do {
+                let result = try await Backend.ask(GameAddonCheck.self, arguments)
+                guard let index = games.firstIndex(where: { $0.id == gameID }) else { return }
+                var items = games[index].addons ?? []
+                let incomingIDs = Set(result.addons.map(\.title_id))
+                let replacedPaths = Set(items.filter { incomingIDs.contains($0.title_id) }.map(\.path))
+                items.removeAll { replacedPaths.contains($0.path) }
+                for addon in result.addons {
+                    items.removeAll { $0.title_id == addon.title_id }
+                    items.append(addon)
+                }
+                games[index].addons = items
+                games[index].titleID = result.title_id
+                save()
+                if selection == gameID { notice = "Updates and DLC added. Use Build & Install to apply them." }
+            } catch { addonError = error.localizedDescription }
+        }
+    }
+
+    func removeAddon(_ addon: GameAddon, from gameID: Game.ID) {
+        guard !isBusy, let index = games.firstIndex(where: { $0.id == gameID }) else { return }
+        // A merged package can contain multiple DLC entries. Remove its file as a unit.
+        games[index].addons?.removeAll { $0.path == addon.path }
+        save()
+        if selection == gameID { notice = "Attachment removed. Use Build & Install to apply the change." }
+    }
+
     /// Reads the selected game's folder and refreshes the Apple TV list.
     func refresh() async {
         previewTask?.cancel(); previewRequest = UUID()
-        info = nil; preview = nil; automaticArtwork = nil; artworkStatus = ""; diagnosis = nil; notice = nil
+        info = nil; preview = nil; topShelfPreview = nil; automaticArtwork = nil; artworkStatus = ""; diagnosis = nil; notice = nil
         await refreshDevices()
         guard let game = current else { return }
         do {
@@ -143,7 +185,8 @@ final class Library: ObservableObject {
             info = found
             if team.isEmpty, let known = found.team { team = known }
             update {
-                $0.name = found.name; $0.titleID = found.title_id
+                $0.name = found.name
+                if !found.title_id.isEmpty { $0.titleID = found.title_id }
                 if let path = found.build_path { $0.lastBuildPath = path }
                 $0.built = found.built ?? false
             }
@@ -189,6 +232,16 @@ final class Library: ObservableObject {
         schedulePreview()
     }
 
+    func setTopShelfArtwork(_ url: URL?) {
+        update { $0.topShelfArtwork = url?.path; $0.topShelfCrop = url == nil ? nil : ArtworkCrop() }
+        schedulePreview()
+    }
+
+    func setTopShelfCrop(_ crop: ArtworkCrop?) {
+        update { $0.topShelfCrop = crop }
+        schedulePreview()
+    }
+
     private func schedulePreview() {
         previewTask?.cancel()
         previewRequest = UUID() // Invalidate a renderer already running before the next one starts.
@@ -202,7 +255,7 @@ final class Library: ObservableObject {
     func renderPreview() async {
         let request = UUID()
         previewRequest = request
-        guard let game = current, let art = artworkPath else { preview = nil; return }
+        guard let game = current, let art = artworkPath ?? current?.topShelfArtwork else { preview = nil; topShelfPreview = nil; return }
         let out = Self.previews.appendingPathComponent(UUID().uuidString + ".png")
         defer { try? FileManager.default.removeItem(at: out) }
         struct Answer: Decodable { let preview: String }
@@ -210,9 +263,15 @@ final class Library: ObservableObject {
             _ = try await Backend.ask(Answer.self, ["preview", "--art", art, "--out", out.path] + (game.artworkCrop?.arguments ?? []))
             guard previewRequest == request, current?.id == game.id, !Task.isCancelled else { return }
             preview = NSImage(contentsOf: out)
+            let shelfOut = Self.previews.appendingPathComponent(UUID().uuidString + ".png")
+            defer { try? FileManager.default.removeItem(at: shelfOut) }
+            _ = try await Backend.ask(Answer.self, ["preview", "--top-shelf", "--art", art, "--out", shelfOut.path]
+                + (game.artworkCrop?.arguments ?? []) + game.topShelfArguments)
+            guard previewRequest == request, current?.id == game.id, !Task.isCancelled else { return }
+            topShelfPreview = NSImage(contentsOf: shelfOut)
         } catch {
             guard previewRequest == request, current?.id == game.id, !Task.isCancelled else { return }
-            preview = nil
+            preview = nil; topShelfPreview = nil
             notice = "That artwork could not be read: \(error.localizedDescription)"
         }
     }
@@ -230,6 +289,7 @@ final class Library: ObservableObject {
         if let players = game.players, !players.isEmpty { arguments += ["--players", players] }
         if let art = artworkPath { arguments += ["--art", art] }
         arguments += game.artworkCrop?.arguments ?? []
+        arguments += game.topShelfArguments
         if icloudBackups { arguments.append("--icloud") }
         if install, let device { arguments += ["--device", device] }
         run = .running; stage = "Starting"; progress = nil; log = []; notice = nil

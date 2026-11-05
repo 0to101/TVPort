@@ -78,6 +78,7 @@ struct ContentView: View {
                     .modifier(GameSelectionStyle(selected: library.selection == game.id))
                     .tag(game.id)
                     .contextMenu { Button("Remove from List") { library.remove(game) } }
+                    .modifier(GameAddonDropTarget(gameID: game.id))
                 }
             }
             .frame(width: 240)
@@ -112,8 +113,8 @@ struct ContentView: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .modifier(GameFolderDropTarget(addFolder: library.add(folder:)))
-            } else {
-                GameView()
+            } else if let game = library.current {
+                GameView().modifier(GameAddonDropTarget(gameID: game.id))
             }
             }
             .frame(minWidth: 740)
@@ -124,6 +125,9 @@ struct ContentView: View {
             if case .success(let folder) = result { library.add(folder: folder) }
         }
         .sheet(isPresented: $library.showingSetup) { SetupView().environmentObject(library) }
+        .alert("Couldn’t add updates or DLC", isPresented: Binding(get: { library.addonError != nil }, set: { if !$0 { library.addonError = nil } })) {
+            Button("OK", role: .cancel) { library.addonError = nil }
+        } message: { Text(library.addonError ?? "") }
         .task { await library.checkSetup() }
         .task { await library.backUpEveryFewMinutes() }
         .task(id: library.selection) { await library.refresh() }
@@ -140,7 +144,7 @@ struct SetupStatusButton: View {
             Image(systemName: setupHasIssue ? "exclamationmark.triangle" : setupReady ? "checkmark.seal" : "seal")
                 .symbolRenderingMode(.palette)
                 .foregroundStyle(setupHasIssue ? Color.red : setupReady ? Color.green : Color.secondary)
-                .font(.system(size: 20))
+                .font(.system(size: 16))
                 .frame(width: 28, height: 28)
                 .contentShape(Rectangle())
         }
@@ -178,11 +182,15 @@ struct GameView: View {
                     Header()
                     SetupBanner()
                     if let notice = library.notice { NoticeBar(text: notice) }
+                    GameAddonsCard()
                     if let info = library.info, !info.prepared, info.sources.isEmpty {
                         NoticeBar(text: "This folder has no .nsp, .xci, .nsz or .xcz files. TVPort builds only from games you dumped from your own Switch.")
                     }
                     HStack(alignment: .top, spacing: 20) {
-                        ArtworkCard().frame(width: 300)
+                        VStack(alignment: .leading, spacing: 24) {
+                            ArtworkCard()
+                            TopShelfArtworkCard()
+                        }.frame(width: 300)
                         // The grouped form adds its own 20-point horizontal inset.
                         // Let the surrounding content provide the shared margins.
                         SettingsForm().padding(.horizontal, -20)
@@ -349,7 +357,7 @@ struct ArtworkCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Apple TV Icon").font(.headline)
+            Text("App Icon").font(.headline)
             ZStack {
                 RoundedRectangle(cornerRadius: 10).fill(.quaternary)
                 if let preview = library.preview {
@@ -363,9 +371,14 @@ struct ArtworkCard: View {
                 if targeted { RoundedRectangle(cornerRadius: 10).strokeBorder(.tint, lineWidth: 3) }
             }
             .aspectRatio(5.0 / 3.0, contentMode: .fit)
-            .accessibilityLabel("Apple TV icon preview. Drop an image to replace it.")
+            .accessibilityLabel("App icon preview. Drop an image to replace it.")
             .dropDestination(for: URL.self) { urls, _ in
-                guard let url = urls.first else { return false }
+                guard let url = urls.first, url.isFileURL else { return false }
+                if ["nsp", "xci", "nsz", "xcz"].contains(url.pathExtension.lowercased()) || url.hasDirectoryPath {
+                    if let game = library.current { library.attachAddons(urls, to: game.id) }
+                    return true
+                }
+                guard NSImage(contentsOf: url) != nil else { return false }
                 library.setArtwork(url)
                 return true
             } isTargeted: { targeted = $0 }
@@ -377,7 +390,7 @@ struct ArtworkCard: View {
                 Text(library.artworkStatus).font(.caption).foregroundStyle(.secondary)
             }
             ArtworkFramingControls()
-            Text("Automatic framing keeps square art on a blurred background. Crop to fill lets you zoom and choose the visible area. The Top Shelf banner uses the same cropped image. Takes effect at the next Build & Install.")
+            Text("Automatic framing keeps square art on a blurred background. Crop to fill lets you zoom and choose the visible area. Top Shelf uses this artwork unless you choose a separate cover. Takes effect at the next Build & Install.")
                 .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         }
         .fileImporter(isPresented: $choosing, allowedContentTypes: [.image]) { result in

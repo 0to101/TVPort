@@ -67,7 +67,17 @@ for layer in ["Back", "Front"] {
     installed.draw(loadImage(out.appendingPathComponent("Test.imagestack/\(layer).imagestacklayer/Content.imageset/icon@2x.png").path), in: area)
 }
 assert(pixels(preview.makeImage()!) == pixels(installed.makeImage()!))
-print("Crop positions and installed icon parity passed")
+// The independent wide crop keeps its own zoom and offset, without touching icon geometry.
+let wideCanvas = bitmap(580, 360)
+wideCanvas.draw(original, in: CGRect(x: 0, y: 0, width: 580, height: 360))
+let wideOriginal = wideCanvas.makeImage()!
+for (x, y) in [(-1.0, -1.0), (0.0, 0.0), (1.0, 1.0)] {
+    let cropped = cropArtwork(wideOriginal, environment: ["DM_SHELF_CROP_SCALE": "2", "DM_SHELF_CROP_X": String(x), "DM_SHELF_CROP_Y": String(y)], prefix: "DM_SHELF", ratio: 29.0 / 9.0)
+    assert(cropped.width == 290 && cropped.height == 90)
+    let expected = wideOriginal.cropping(to: CGRect(x: 290 * (x + 1) / 2, y: 270 * (y + 1) / 2, width: 290, height: 90))!
+    assert(pixels(cropped) == pixels(expected))
+}
+print("Icon and wide cover crop geometry passed")
 '''
         with tempfile.TemporaryDirectory() as folder:
             script = Path(folder) / 'check.swift'
