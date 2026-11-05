@@ -87,7 +87,10 @@ struct ContentView: View {
             .toolbar {
                 Button { choosingFolder = true } label: { Label("Add Game", systemImage: "plus") }
                     .help("Choose a game folder, or drop a game file or folder into the sidebar")
-                Button { openWindow(id: "manage-saves") } label: { Label("Manage Saves", systemImage: "externaldrive.badge.timemachine") }
+                Button { openWindow(id: "manage-saves") } label: {
+                    Label("Manage Saves", systemImage: "externaldrive.badge.timemachine")
+                        .offset(x: -3)
+                }
                     .help("Import, export and restore saves for games installed on an Apple TV")
                     .disabled(library.isBusy)
                 SetupStatusButton()
