@@ -66,19 +66,22 @@ struct ContentView: View {
 
     var body: some View {
         NavigationSplitView(columnVisibility: .constant(.all)) {
-            List(library.games, selection: $library.selection) { game in
-                VStack(alignment: .leading, spacing: 6) {
-                    GameArtworkThumbnail(titleID: game.titleID, name: game.name,
-                                         artworkPath: game.artwork ?? (game.id == library.selection ? library.artworkPath : nil))
-                    Text(game.name).lineLimit(1)
-                    Text(game.built == true ? "Built" : "Ready to build").font(.callout).foregroundStyle(.secondary)
-                    if let time = library.backedUp(game) { Text("Saves backed up \(time)").font(.caption).foregroundStyle(.secondary) }
+            VStack(spacing: 0) {
+                List(library.games, selection: $library.selection) { game in
+                    VStack(alignment: .leading, spacing: 6) {
+                        GameArtworkThumbnail(titleID: game.titleID, name: game.name,
+                                             artworkPath: game.artwork ?? (game.id == library.selection ? library.artworkPath : nil))
+                        Text(game.name).lineLimit(1)
+                        Text(game.built == true ? "Built" : "Ready to build").font(.callout).foregroundStyle(.secondary)
+                        if let time = library.backedUp(game) { Text("Saves backed up \(time)").font(.caption).foregroundStyle(.secondary) }
+                    }
+                    .modifier(GameSelectionStyle(selected: library.selection == game.id))
+                    .tag(game.id)
+                    .contextMenu { Button("Remove from List") { library.remove(game) } }
                 }
-                .modifier(GameSelectionStyle(selected: library.selection == game.id))
-                .tag(game.id)
-                .contextMenu { Button("Remove from List") { library.remove(game) } }
             }
             .frame(width: 240)
+            .modifier(GameFolderDropTarget(addFolder: library.add(folder:)))
             .navigationSplitViewColumnWidth(240)
             .toolbar(removing: .sidebarToggle)
             .toolbar {
@@ -97,11 +100,13 @@ struct ContentView: View {
                     ContentUnavailableView {
                         Label("No games yet", systemImage: "appletv")
                     } description: {
-                        Text("Add a folder holding your own game's .nsp or .xci files, with any update or DLC.")
+                        Text("Add or drop a folder holding your own game's .nsp or .xci files, with any update or DLC.")
                     } actions: {
                         Button("Add Game Folder…") { choosingFolder = true }.buttonStyle(.borderedProminent)
                     }
                 }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .modifier(GameFolderDropTarget(addFolder: library.add(folder:)))
             } else {
                 GameView()
             }
