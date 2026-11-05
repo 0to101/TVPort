@@ -231,6 +231,41 @@ class SaveImporter:
                                   connected=False, developer_mode=False) for d in sorted(devices)],
                     apps=sorted(apps.values(), key=lambda a: (a['name'].casefold(), a['id'])))
 
+    def store_import(self, device, bundle, slot, folder, name, version='', title_id=''):
+        """Keep a new independent save copy locally; never read or write the TV."""
+        if not device or not bundle or not SLOT.fullmatch(slot):
+            self.fail('Choose a game and a valid save slot for this copy.')
+        source = self.source(folder)
+        folder = Path(source['folder'])
+        self.home.mkdir(parents=True, exist_ok=True)
+        identifier = uuid.uuid4().hex
+        staging = self.home / ('.incoming-' + identifier)
+        target = self.home / identifier
+        destination = staging / 'Save Files'
+        destination.mkdir(parents=True)
+        try:
+            for directory in source['directories']:
+                (destination / directory).mkdir(parents=True, exist_ok=True)
+            for path in source['paths']:
+                original, copy = Path(folder) / path, destination / path
+                before = original.stat()
+                copy.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(original, copy)
+                after = original.stat()
+                if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns) or hashlib.sha256(original.read_bytes()).digest() != hashlib.sha256(copy.read_bytes()).digest():
+                    self.fail('The save changed while copying. Quit the source game and try again.')
+            if self.source(folder)['paths'] != source['paths']:
+                self.fail('The save changed while copying. Quit the source game and try again.')
+            record = dict(device=device, bundle=bundle, game=name or bundle, version=version, title_id=title_id,
+                          slot=slot, date=time.time(), status='imported-copy', previous_files=source['files'], backup_ready=True)
+            (staging / 'record.json').write_text(json.dumps(record, indent=2))
+            staging.rename(target)
+        finally:
+            if staging.exists():
+                shutil.rmtree(staging)
+        return dict(files=source['files'], backup=str(target / 'Save Files'),
+                    message='New save copy imported. Choose Restore to send it to the Apple TV.')
+
     def stop_game(self, device, app):
         processes = self.query('device', 'info', 'processes', '--device', device)
         for p in processes.get('runningProcesses', []):
@@ -366,7 +401,7 @@ class SaveImporter:
             if hashlib.sha256(out.read_bytes()).digest() != hashlib.sha256((expected / name).read_bytes()).digest():
                 self.fail('A transferred save file did not match the source.')
 
-    def restore(self, device, bundle, backup_id):
+    def restore(self, device, bundle, backup_id, slot=None):
         if not re.fullmatch(r'[0-9a-f]{32}', backup_id):
             self.fail('Invalid backup.')
         work = next((root / backup_id for root in self.roots if (root / backup_id / 'record.json').is_file()), self.home / backup_id)
@@ -376,7 +411,9 @@ class SaveImporter:
             self.fail('This backup could not be read.')
         if record.get('device') != device or record.get('bundle') != bundle or not record.get('backup_ready'):
             self.fail('This backup belongs to a different game or Apple TV.')
-        return self.transfer(device, bundle, record['slot'], self.backup_folder(work), restore_id=backup_id)
+        if slot is not None and slot not in {target['id'] for target in self.targets(device, bundle)}:
+            self.fail('Choose an existing player/save slot on the Apple TV.')
+        return self.transfer(device, bundle, slot or record['slot'], self.backup_folder(work), restore_id=backup_id)
 
     def export_all(self, device):
         apps = [app for app in self.apps(device) if app['compatible']]

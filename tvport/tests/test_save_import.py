@@ -174,6 +174,36 @@ class Saves(unittest.TestCase):
         self.assertEqual(Path(result['backup']).joinpath('data.bin').read_bytes(), b'original TV progress')
         self.assertEqual(self.tool.history('tv', self.device.bundle)[0]['status'], 'exported')
 
+    def test_local_import_keeps_independent_copies_without_contacting_tv(self):
+        with patch.object(self.device, 'devicectl_json', side_effect=AssertionError('Local import contacted TV')):
+            first = self.tool.store_import('tv', self.device.bundle, 'save', self.source, 'Test Game')
+            second = self.tool.store_import('tv', self.device.bundle, 'save', self.source, 'Test Game')
+            self.assertNotEqual(first['backup'], second['backup'])
+            self.assertEqual(len(self.tool.history('tv', self.device.bundle)), 2)
+            self.assertEqual(self.tool.history('tv', self.device.bundle)[0]['status'], 'imported-copy')
+            self.assertEqual(Path(first['backup']).joinpath('data.bin').read_bytes(), b'new Mac progress')
+            (self.source / 'data.bin').write_bytes(b'changed later')
+            self.assertEqual(Path(first['backup']).joinpath('data.bin').read_bytes(), b'new Mac progress')
+        self.assertEqual(self.device.writes, [])
+        self.assertEqual((self.device.remote / 'Library/Caches/save/data.bin').read_bytes(), b'original TV progress')
+
+    def test_failed_local_import_does_not_publish_partial_copy(self):
+        with patch('save_import.shutil.copy2', side_effect=OSError('disk full')):
+            with self.assertRaises(OSError):
+                self.tool.store_import('tv', self.device.bundle, 'save', self.source, 'Test Game')
+        self.assertEqual(self.tool.history('tv', self.device.bundle), [])
+        self.assertEqual(list(self.tool.home.iterdir()), [])
+
+    def test_restore_local_import_to_another_existing_player_preserves_original(self):
+        imported = self.tool.store_import('tv', self.device.bundle, 'save', self.source, 'Test Game')
+        result = self.tool.restore('tv', self.device.bundle, Path(imported['backup']).parent.name, 'save.p-other')
+        self.assertEqual((self.device.remote / 'Library/Caches/save/data.bin').read_bytes(), b'original TV progress')
+        self.assertEqual((self.device.remote / 'Library/Caches/save.p-other/data.bin').read_bytes(), b'new Mac progress')
+        self.assertEqual(Path(result['backup']).joinpath('data.bin').read_bytes(), b'other player')
+        self.assertEqual(Path(imported['backup']).joinpath('data.bin').read_bytes(), b'new Mac progress')
+        with self.assertRaisesRegex(Failure, 'existing player'):
+            self.tool.restore('tv', self.device.bundle, Path(imported['backup']).parent.name, 'save.p-missing')
+
     def test_saved_games_and_history_work_without_device_access(self):
         self.tool.export('tv', self.device.bundle, 'save')
         self.tool.export('tv', self.device.bundle, 'save.p-other')

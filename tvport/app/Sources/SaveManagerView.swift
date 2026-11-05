@@ -24,6 +24,9 @@ struct ImportedSaveBackup: Decodable, Identifiable {
     let files: Int
     let status: String
     let folder: String
+    var kind: String {
+        status == "imported-copy" ? "Local import" : status == "exported" ? "Apple TV backup" : "Safety backup"
+    }
 }
 
 private struct SaveSource: Decodable {
@@ -65,6 +68,7 @@ struct SaveManagerView: View {
     @State private var confirmingImport = false
     @State private var restoring: ImportedSaveBackup?
     @State private var confirmingRestore = false
+    @State private var restoreSlot = "save"
 
     private var game: InstalledSaveGame? { apps.first { $0.id == gameID } }
     private var busy: Bool { library.transferringSaves }
@@ -74,6 +78,9 @@ struct SaveManagerView: View {
     private var canTransfer: Bool {
         online && availableApps.contains(gameID) && game?.compatible == true && !device.isEmpty && slots.contains { $0.id == slot }
             && !loadingApps && !loadingSlots && !loadingSource && !library.isBusy
+    }
+    private var canImportCopy: Bool {
+        game?.compatible == true && !device.isEmpty && !loadingSource && !library.isBusy
     }
 
     var body: some View {
@@ -92,7 +99,7 @@ struct SaveManagerView: View {
             }.disabled(busy)
             Toggle("Keep backups in iCloud Drive", isOn: $library.icloudBackups)
                 .disabled(library.isBusy)
-                .help("Keep new automatic and manual backups, including originals saved before import or restore, in iCloud Drive → TVPort Saves.")
+                .help("Keep new backups and local imports in iCloud Drive → TVPort Saves. Existing copies stay where they are.")
             if library.icloudBackups && !library.icloudAvailable {
                 Label("iCloud Drive is unavailable on this Mac. Backups are kept locally until it is available.", systemImage: "icloud.slash")
                     .font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
@@ -118,8 +125,9 @@ struct SaveManagerView: View {
                                     Text(app.name).lineLimit(2)
                                     if !app.compatible { Text("Unavailable").font(.caption).foregroundStyle(.secondary) }
                                 }
-                            }.tag(app.id)
-                                .padding(.leading, -8)
+                            }
+                                .modifier(GameSelectionStyle(selected: gameID == app.id))
+                                .tag(app.id)
                                 .listRowInsets(EdgeInsets(top: 5, leading: 0, bottom: 5, trailing: 0))
                                 .listRowSeparator(.hidden)
                         }
@@ -127,7 +135,7 @@ struct SaveManagerView: View {
                     .listStyle(.plain)
                     .contentMargins(.horizontal, 0, for: .scrollContent)
                     .disabled(busy)
-                    Toggle("Show other apps", isOn: $showAllApps).font(.caption).disabled(busy)
+                    Toggle("Show other apps", isOn: $showAllApps).disabled(busy)
                 }
                 .frame(minWidth: 190, idealWidth: 220, maxWidth: 280)
                 Divider()
@@ -161,17 +169,33 @@ struct SaveManagerView: View {
                 catch { self.error = error.localizedDescription }
             }
         }
-        .alert("Import into \(game?.name ?? "game")?", isPresented: $confirmingImport) {
+        .alert("Import a new save copy?", isPresented: $confirmingImport) {
             Button("Cancel", role: .cancel) {}
-            Button("Back Up & Import") { Task { await transfer(command: "import-save") } }
+            Button("Import Copy") { Task { await transfer(command: "store-save") } }
         } message: {
-            Text("Import \(source?.files ?? 0) files from ‘\(source.map { URL(fileURLWithPath: $0.folder).lastPathComponent } ?? "")’ into \(slots.first { $0.id == slot }?.name ?? slot)? The game will close and its current save will be backed up first. You can restore it from Previous Backups.")
+            Text("Add \(source?.files ?? 0) files from ‘\(source.map { URL(fileURLWithPath: $0.folder).lastPathComponent } ?? "")’ as a new saved copy for \(game?.name ?? "this game"). The Apple TV save stays unchanged. Choose Restore later to send this copy to the TV.")
         }
-        .alert("Restore this backup?", isPresented: $confirmingRestore) {
-            Button("Cancel", role: .cancel) {}
-            Button("Back Up & Restore") { Task { await transfer(command: "restore-save", backup: restoring) } }
-        } message: {
-            Text("This restores \(restoring?.slot ?? "the save") in \(game?.name ?? "the selected game"). The current save is backed up first, so you can undo the restore.")
+        .sheet(isPresented: $confirmingRestore) {
+            VStack(alignment: .leading, spacing: 16) {
+                Text("Restore to Apple TV").font(.title2.weight(.semibold))
+                Text(game?.name ?? "Selected game").font(.headline)
+                Picker("Replace save for", selection: $restoreSlot) {
+                    ForEach(slots) { Text($0.name).tag($0.id) }
+                }
+                Text("The selected player’s current save will be backed up before it is replaced. Other players’ saves stay unchanged.")
+                    .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                Text("To keep both saves playable, choose a different existing player profile. Games with shared saves may share progress between players.")
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                HStack {
+                    Spacer()
+                    Button("Cancel") { confirmingRestore = false }.keyboardShortcut(.cancelAction)
+                    Button("Back Up & Restore") {
+                        confirmingRestore = false
+                        Task { await transfer(command: "restore-save", backup: restoring) }
+                    }.buttonStyle(.borderedProminent)
+                        .disabled(!canTransfer || !slots.contains { $0.id == restoreSlot })
+                }
+            }.padding(24).frame(width: 480)
         }
     }
 
@@ -194,32 +218,38 @@ struct SaveManagerView: View {
                 }.disabled(busy || loadingSlots) }
                 Divider()
                 HStack {
-                    Button("Import Saves to Apple TV…") { source = nil; choosingSource = true }
-                        .buttonStyle(.borderedProminent).disabled(!canTransfer)
+                    Button("Import Save Copy…") { source = nil; choosingSource = true }
+                        .buttonStyle(.borderedProminent).disabled(!canImportCopy)
                         .help("Import this game’s save folder from Ryujinx, another compatible emulator, or a Mac game. Choose the folder containing the save files, not the whole emulator folder.")
                     Button("Back Up to Mac") { Task { await transfer(command: "export-save") } }
                         .disabled(!canTransfer)
                         .help("Copy the selected save slot to your Mac. Open the backup in Finder to use it with a compatible emulator or Mac game.")
                     if loadingSource { ProgressView().controlSize(.small) }
                 }
-                Text("Import and restore back up the current save first.")
+                Text("Import adds a new copy. Restore backs up the Apple TV save first.")
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
             Divider()
-            Text("Previous Backups").font(.headline)
+            Text("Saved Copies & Backups").font(.headline)
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 12) {
                     if backups.isEmpty { Text("No backups for this game yet.").foregroundStyle(.secondary) }
                     ForEach(backups) { backup in
                         HStack {
                             VStack(alignment: .leading, spacing: 3) {
-                                Text(Date(timeIntervalSince1970: backup.date).formatted(date: .abbreviated, time: .standard))
-                                Text("\(slots.first { $0.id == backup.slot }?.name ?? backup.slot) · \(backup.files) files" + (backup.status == "exported" ? " · Exported copy" : " · Original save"))
+                                Text(backup.kind).fontWeight(.medium)
+                                Text(Date(timeIntervalSince1970: backup.date).formatted(date: .abbreviated, time: .shortened))
+                                    .font(.caption).foregroundStyle(.secondary)
+                                Text("\(slots.first { $0.id == backup.slot }?.name ?? (backup.slot == "save" ? "Default player" : backup.slot)) · \(backup.files) files")
                                     .font(.caption).foregroundStyle(.secondary)
                             }
                             Spacer()
                             Button("Show in Finder") { reveal(backup.folder) }
-                            Button("Restore…") { restoring = backup; confirmingRestore = true }
+                            Button("Restore to Apple TV…") {
+                                restoring = backup
+                                restoreSlot = slots.contains { $0.id == backup.slot } ? backup.slot : slot
+                                confirmingRestore = true
+                            }
                                 .disabled(!canTransfer)
                         }
                     }
@@ -304,7 +334,7 @@ struct SaveManagerView: View {
     }
 
     private func loadSlots() async {
-        slots = []; backups = []; message = nil; resultFolder = nil
+        slots = []; slot = "save"; backups = []; message = nil; resultFolder = nil
         guard game?.compatible == true, !busy else { loadingSlots = false; return }
         await loadHistory()
         guard online, availableApps.contains(gameID), !Task.isCancelled else { loadingSlots = false; return }
@@ -333,16 +363,17 @@ struct SaveManagerView: View {
     }
 
     private func transfer(command: String, backup: ImportedSaveBackup? = nil) async {
-        guard canTransfer else { return }
+        guard command == "store-save" ? canImportCopy : canTransfer else { return }
         var args = [command]
-        if command == "import-save" {
+        if command == "store-save" {
             guard let source else { return }
             args.append(source.folder)
+            args += ["--name", game?.name ?? "", "--version", game?.version ?? "", "--title-id", game?.title_id ?? ""]
         }
         args += ["--device", device, "--bundle", gameID]
         if command == "restore-save" {
             guard let backup else { return }
-            args += ["--backup", backup.id]
+            args += ["--backup", backup.id, "--slot", restoreSlot]
         } else { args += ["--slot", slot] }
         if library.icloudBackups { args.append("--icloud") }
         library.transferringSaves = true; error = nil; message = nil; resultFolder = nil
@@ -351,8 +382,8 @@ struct SaveManagerView: View {
             let result = try await Backend.ask(SaveTransferResult.self, args)
             if let available = result.icloud_available { library.icloudAvailable = available }
             message = result.message; resultFolder = result.backup
-            if command != "export-save" {
-                let changedSlot = backup?.slot ?? slot
+            if command == "restore-save" {
+                let changedSlot = restoreSlot
                 slots = slots.map { $0.id == changedSlot ? SaveSlot(id: $0.id, name: $0.name, files: result.files) : $0 }
             }
         } catch { self.error = error.localizedDescription }

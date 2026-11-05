@@ -483,7 +483,7 @@ def cmd_inspect(args) -> None:
     profile = provisioning(app)
     team = profile.get('team') or known_team()
     print(json.dumps({'folder': str(game.folder), 'title_id': game.title_id, 'artwork_title_id': game.artwork_title_id, 'name': game.name() if game.build else game.folder.name, 'version': game.version() if game.build else '',
-                      'build_folder': str(game.build_parent), 'build_path': str(game.build) if game.build else None,
+                      'build_folder': str(game.build_parent), 'build_path': str(game.build) if game.build else None, 'built': app is not None,
                       'sources': game.sources, 'prepared': game.prepared, 'render_scale': game.render_scale_supported() if game.build else False, 'frame_step': game.frame_step_supported() if game.build else False, 'fps_target': int(game.profile_value('fps_target') or 0) if game.title_id else 0, 'icon': str(game.icon) if game.icon else None, 'team': team,
                       'bundle_id': game.bundle_id(team) if game.build and team else None, 'signing': profile, 'saved': game.state(),
                       'keys': str(find_keys(game) or '') or None, **backup_info(latest_backup(game))}))
@@ -1022,8 +1022,10 @@ def cmd_save_import(args) -> None:
             answer = {'backups': importer.history(args.device, args.bundle)}
         else:
             with one_build_at_a_time():
-                if args.command == 'restore-save':
-                    answer = importer.restore(args.device, args.bundle, args.backup)
+                if args.command == 'store-save':
+                    answer = importer.store_import(args.device, args.bundle, args.slot, args.folder, args.name, args.version, args.title_id)
+                elif args.command == 'restore-save':
+                    answer = importer.restore(args.device, args.bundle, args.backup, args.slot)
                 elif args.command == 'export-save':
                     answer = importer.export(args.device, args.bundle, args.slot)
                 elif args.command == 'export-all-saves':
@@ -1055,10 +1057,20 @@ def main() -> int:
     importing.add_argument('--device', required=True)
     importing.add_argument('--bundle', required=True)
     importing.add_argument('--slot', required=True)
+    storing = commands.add_parser('store-save')
+    storing.add_argument('folder', type=Path)
+    storing.add_argument('--device', required=True)
+    storing.add_argument('--bundle', required=True)
+    storing.add_argument('--slot', default='save')
+    storing.add_argument('--name', default='')
+    storing.add_argument('--version', default='')
+    storing.add_argument('--title-id', default='')
+    storing.add_argument('--icloud', action='store_true')
     restoring = commands.add_parser('restore-save')
     restoring.add_argument('--device', required=True)
     restoring.add_argument('--bundle', required=True)
     restoring.add_argument('--backup', required=True)
+    restoring.add_argument('--slot')
     history = commands.add_parser('save-history')
     history.add_argument('--device', required=True)
     history.add_argument('--bundle', required=True)
@@ -1120,7 +1132,7 @@ def main() -> int:
             REPO = unpack_engine(HERE, DATA)
         {'devices': cmd_devices, 'inspect': cmd_inspect, 'preview': cmd_preview, 'build': cmd_build, 'backup': cmd_backup, 'launch': cmd_launch, 'diagnose': cmd_diagnose,
          'doctor': cmd_doctor, 'setup': cmd_setup, 'autobackup': cmd_autobackup,
-         **{name: cmd_save_import for name in ('installed-games', 'saved-games', 'save-targets', 'save-source', 'save-history', 'import-save', 'export-save', 'export-all-saves', 'restore-save')}}[args.command](args)
+         **{name: cmd_save_import for name in ('installed-games', 'saved-games', 'save-targets', 'save-source', 'save-history', 'store-save', 'import-save', 'export-save', 'export-all-saves', 'restore-save')}}[args.command](args)
     except Failure as failure:
         if streamed:
             emit('error', message=str(failure))

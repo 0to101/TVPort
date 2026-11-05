@@ -34,9 +34,10 @@ struct ContentView: View {
                     GameArtworkThumbnail(titleID: game.titleID, name: game.name,
                                          artworkPath: game.artwork ?? (game.id == library.selection ? library.artworkPath : nil))
                     Text(game.name).lineLimit(1)
-                    Text(game.titleID.isEmpty ? "Not built yet" : game.titleID).font(.caption).foregroundStyle(.secondary)
+                    Text(game.built == true ? "Built" : "Ready to build").font(.callout).foregroundStyle(.secondary)
                     if let time = library.backedUp(game) { Text("Saves backed up \(time)").font(.caption).foregroundStyle(.secondary) }
                 }
+                .modifier(GameSelectionStyle(selected: library.selection == game.id))
                 .tag(game.id)
                 .contextMenu { Button("Remove from List") { library.remove(game) } }
             }
@@ -194,7 +195,7 @@ struct Header: View {
         if let info = library.info {
             VStack(alignment: .leading, spacing: 4) {
                 Text(info.name).font(.title2.weight(.semibold))
-                Text([info.version.isEmpty ? nil : "Version \(info.version)", info.title_id.isEmpty ? nil : info.title_id, info.prepared ? "Ready to build" : "First build takes 30 to 60 minutes"]
+                Text([info.version.isEmpty ? nil : "Version \(info.version)", info.title_id.isEmpty ? nil : "ID: \(info.title_id)", info.built == true ? "Built" : "Ready to build"]
                     .compactMap { $0 }.joined(separator: " · ")).foregroundStyle(.secondary)
                 if let days = info.signing?.days_left, days < 3, info.signing?.free_team == true {
                     Label(days < 0 ? "This install's signature has expired, so the TV won't open it. Build & Install renews it." : "This install stops opening in \(days) day\(days == 1 ? "" : "s"). Build & Install renews it.",

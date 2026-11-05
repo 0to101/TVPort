@@ -33,6 +33,7 @@ struct Game: Codable, Identifiable, Hashable {
     var buildFolder: String?
     var buildNextToOriginal: Bool?
     var lastBuildPath: String?
+    var built: Bool?
     var keys: String?
     var mode: RenderMode = .handheld
     var texture: TextureDetail = .medium
@@ -144,6 +145,7 @@ final class Library: ObservableObject {
             update {
                 $0.name = found.name; $0.titleID = found.title_id
                 if let path = found.build_path { $0.lastBuildPath = path }
+                $0.built = found.built ?? false
             }
             let titleID = found.artwork_title_id ?? found.title_id
             automaticArtwork = ArtworkStore.cachedBanner(titleID)?.path

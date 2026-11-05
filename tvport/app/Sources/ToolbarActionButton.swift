@@ -28,6 +28,7 @@ struct ToolbarActionButton: View {
 private struct ToolbarPushButtonStyle: ButtonStyle {
     let primary: Bool
     @Environment(\.isEnabled) private var isEnabled
+    @Environment(\.colorScheme) private var colorScheme
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
@@ -35,7 +36,11 @@ private struct ToolbarPushButtonStyle: ButtonStyle {
             .foregroundStyle(primary ? Color.white : Color.primary)
             .background {
                 RoundedRectangle(cornerRadius: 5)
-                    .fill(primary ? Color.accentColor : Color(nsColor: .controlColor))
+                    .fill(primary ? Color.accentColor : Color.primary.opacity(colorScheme == .dark ? 0.14 : 0.08))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 5)
+                            .strokeBorder(Color.primary.opacity(primary ? 0 : 0.12), lineWidth: 0.5)
+                    }
             }
             .contentShape(RoundedRectangle(cornerRadius: 5))
             .opacity(isEnabled ? (configuration.isPressed ? 0.75 : 1) : 0.4)

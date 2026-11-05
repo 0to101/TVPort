@@ -29,6 +29,7 @@ struct GameInfo: Codable {
     let version: String
     let sources: [String]
     let prepared: Bool
+    let built: Bool?
     let render_scale: Bool?   // the rewritten game has a render-scale stub (backend.py render_scale_supported)
     let frame_step: Bool?     // and a frame step, which holds 30 fps while the TV is hot (frame_step_supported)
     let fps_target: Int?      // the profile's frame-rate target (0: the game's own limit, no choice to offer)
