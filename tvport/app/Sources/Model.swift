@@ -70,6 +70,9 @@ final class Library: ObservableObject {
     @Published var progress: Double?
     @Published var log: [String] = []
     @Published var diagnosis: Diagnosis?
+    @Published var showingDiagnosis = false
+    @Published var readingDiagnosis = false
+    @Published var diagnosisError: String?
     @Published var notice: String?
     @Published var checkingAddonGame: String?
     @Published var addonError: String?
@@ -408,10 +411,22 @@ final class Library: ObservableObject {
     }
 
     func diagnose() {
-        guard let device, let bundleID else { return }
-        notice = "Reading the last run from the Apple TV…"
+        guard !readingDiagnosis, let device, let bundleID else { return }
+        showingDiagnosis = true
+        readingDiagnosis = true
+        diagnosis = nil
+        diagnosisError = nil
+        let gameID = selection
         Task {
-            do { diagnosis = try await Backend.ask(Diagnosis.self, ["diagnose", "--device", device, "--bundle", bundleID]); notice = nil } catch { notice = error.localizedDescription }
+            defer { readingDiagnosis = false }
+            do {
+                let result = try await Backend.ask(Diagnosis.self, ["diagnose", "--device", device, "--bundle", bundleID])
+                guard selection == gameID else { showingDiagnosis = false; return }
+                diagnosis = result
+            } catch {
+                guard selection == gameID else { showingDiagnosis = false; return }
+                diagnosisError = error.localizedDescription
+            }
         }
     }
 }

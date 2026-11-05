@@ -4,6 +4,7 @@ import SwiftUI
 /// One native text document lets Select All and Copy span the entire build log.
 struct SelectableLogView: NSViewRepresentable {
     let text: String
+    var accessibilityLabel = "Build log"
     @Environment(\.colorScheme) private var colorScheme
 
     func makeNSView(context: Context) -> LogTextScrollView {
@@ -11,6 +12,7 @@ struct SelectableLogView: NSViewRepresentable {
     }
 
     func updateNSView(_ view: LogTextScrollView, context: Context) {
+        view.logTextView.setAccessibilityLabel(accessibilityLabel)
         view.setDarkAppearance(colorScheme == .dark)
         view.setLog(text)
     }

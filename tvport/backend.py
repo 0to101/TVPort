@@ -1058,10 +1058,17 @@ def verdicts(run_log: dict, kills: list) -> list:
 def cmd_diagnose(args) -> None:
     with tempfile.TemporaryDirectory() as folder:
         folder = Path(folder)
-        copied = run(['xcrun', 'devicectl', 'device', 'copy', 'from', '--device', args.device, '--domain-type', 'appDataContainer', '--domain-identifier', args.bundle, '--source', f'{CACHES}/log.txt', '--destination', folder / 'log.txt'])
+        try:
+            copied = run(['xcrun', 'devicectl', 'device', 'copy', 'from', '--device', args.device, '--domain-type', 'appDataContainer', '--domain-identifier', args.bundle, '--source', f'{CACHES}/log.txt', '--destination', folder / 'log.txt'], timeout=30)
+        except subprocess.TimeoutExpired as error:
+            raise Failure('The Apple TV did not respond. Wake it and check the connection, then press Refresh.') from error
         if copied.returncode or not (folder / 'log.txt').is_file():
-            raise Failure('The game has not left a log on the Apple TV yet. Play it once, then look again.')
-        run(['xcrun', 'devicectl', 'device', 'copy', 'from', '--device', args.device, '--domain-type', 'systemCrashLogs', '--source', '.', '--destination', folder / 'reports'])
+            raise Failure('Could not read the game log. Check that the Apple TV is awake and connected and the game has been played, then press Refresh.')
+        # System reports are optional; an unavailable report must not hide the game log.
+        try:
+            run(['xcrun', 'devicectl', 'device', 'copy', 'from', '--device', args.device, '--domain-type', 'systemCrashLogs', '--source', '.', '--destination', folder / 'reports'], timeout=10)
+        except subprocess.TimeoutExpired:
+            pass
         log = (folder / 'log.txt').read_text(errors='replace')
         run_log, kills = read_log(log), read_jetsam(folder / 'reports')
         print(json.dumps({'run': run_log, 'kills': kills[-5:], 'verdicts': verdicts(run_log, kills[-1:]), 'log': log[-20000:]}))

@@ -194,7 +194,6 @@ struct GameView: View {
                         // Let the surrounding content provide the shared margins.
                         SettingsForm().padding(.horizontal, -20)
                     }
-                    if let diagnosis = library.diagnosis { DiagnosisCard(diagnosis: diagnosis) }
                 }
                 .padding(.horizontal, 20)
                 .padding(.bottom, 20)
@@ -207,6 +206,9 @@ struct GameView: View {
         }
         .navigationTitle("")
         .toolbar { gameToolbar }
+        .sheet(isPresented: $library.showingDiagnosis) {
+            LastRunStatsView().environmentObject(library)
+        }
     }
 
     @ToolbarContentBuilder
@@ -221,7 +223,7 @@ struct GameView: View {
 
     private var actions: some View {
         HStack(spacing: 8) {
-            ToolbarActionButton(title: "Last Run Stats", enabled: canUseInstalledGame,
+            ToolbarActionButton(title: "Last Run Stats", enabled: canUseInstalledGame && !library.readingDiagnosis,
                                 help: "Read memory and frame times from the Apple TV") { library.diagnose() }
             ToolbarActionButton(title: "Open on TV", enabled: canUseInstalledGame) { library.launch() }
             if library.isBusy {
@@ -534,6 +536,47 @@ struct SettingsForm: View {
             guard library.selection == gameID else { return }
             library.update { $0[keyPath: path] = value }
         })
+    }
+}
+
+struct LastRunStatsView: View {
+    @EnvironmentObject var library: Library
+    @Environment(\.dismiss) private var dismiss
+    @State private var showLog = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("Last Run Stats").font(.title2.weight(.semibold))
+            Text(library.info?.name ?? "Game").foregroundStyle(.secondary)
+            if library.readingDiagnosis {
+                ProgressView("Reading the last run from the Apple TV…")
+                    .frame(maxWidth: .infinity, minHeight: 100)
+            } else if let error = library.diagnosisError {
+                Label(error, systemImage: "exclamationmark.triangle")
+                    .textSelection(.enabled)
+            } else if let diagnosis = library.diagnosis {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 12) {
+                        if diagnosis.run.last_frame > 0 || diagnosis.run.peak_mb > 0 || diagnosis.run.worst_ms > 0 {
+                            DiagnosisCard(diagnosis: diagnosis)
+                        } else {
+                            Text("The game left a log, but no performance readings yet. Play beyond the loading screens, then refresh.")
+                            ForEach(diagnosis.verdicts, id: \.self) { Text($0) }
+                        }
+                    }.textSelection(.enabled)
+                }.frame(maxHeight: 240)
+                DisclosureGroup("Show Run Log", isExpanded: $showLog) {
+                    SelectableLogView(text: diagnosis.log, accessibilityLabel: "Last run log").frame(height: 220)
+                }
+            }
+            HStack {
+                if !library.readingDiagnosis {
+                    Button("Refresh") { library.diagnose() }
+                }
+                Spacer()
+                Button("Close") { dismiss() }.keyboardShortcut(.cancelAction)
+            }
+        }.padding(24).frame(width: 650)
     }
 }
 

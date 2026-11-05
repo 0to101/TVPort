@@ -1,4 +1,7 @@
 import json
+import io
+from contextlib import redirect_stdout
+from types import SimpleNamespace
 import subprocess
 import sys
 import tempfile
@@ -518,3 +521,30 @@ class GameFolder(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class DiagnoseCommand(unittest.TestCase):
+    args = SimpleNamespace(device='test-tv', bundle='test.game')
+
+    def test_unreachable_tv_has_actionable_error(self):
+        with patch.object(backend, 'run', side_effect=subprocess.TimeoutExpired('devicectl', 30)):
+            with self.assertRaisesRegex(backend.Failure, 'Wake it'):
+                backend.cmd_diagnose(self.args)
+
+    def test_missing_log_has_actionable_error(self):
+        with patch.object(backend, 'run', return_value=subprocess.CompletedProcess([], 1)):
+            with self.assertRaisesRegex(backend.Failure, 'game has been played'):
+                backend.cmd_diagnose(self.args)
+
+    def test_optional_report_timeout_keeps_game_stats(self):
+        def copy(argv, **kwargs):
+            if 'systemCrashLogs' in argv:
+                raise subprocess.TimeoutExpired('devicectl', 10)
+            Path(argv[-1]).write_text(LOG)
+            return subprocess.CompletedProcess([], 0)
+        output = io.StringIO()
+        with patch.object(backend, 'run', side_effect=copy), redirect_stdout(output):
+            backend.cmd_diagnose(self.args)
+        result = json.loads(output.getvalue())
+        self.assertEqual(result['run']['last_frame'], 3000)
+        self.assertIn('memory up to frame', result['log'])
