@@ -102,7 +102,9 @@ struct ContentView: View {
                     } description: {
                         Text("Drop a game folder or an .nsp, .xci, .nsz or .xcz file here. A dropped file adds its containing folder, including updates and DLC.")
                     } actions: {
-                        Button("Add Game Folder…") { choosingFolder = true }.buttonStyle(.borderedProminent)
+                        Button("Drop game folder here") { choosingFolder = true }
+                            .buttonStyle(.borderedProminent)
+                            .help("Drop a game file or folder here, or click to choose a folder")
                     }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
