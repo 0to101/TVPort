@@ -17,7 +17,7 @@ targets:
       properties:
         CFBundleDisplayName: TVPort
         CFBundleShortVersionString: "1.2"
-        CFBundleVersion: "15"
+        CFBundleVersion: "16"
         LSApplicationCategoryType: public.app-category.utilities
         TVPortRoot: $(SRCROOT)/../..   # where backend.py and the engine are; the app is not sandboxed because it runs Xcode's tools
     settings:
