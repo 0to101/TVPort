@@ -563,18 +563,8 @@ struct ProgressPanel: View {
                 Text(message).font(.callout).textSelection(.enabled).lineLimit(8).foregroundStyle(.red)
             }
             if showLog && !library.log.isEmpty {
-                ScrollViewReader { reader in
-                    ScrollView {
-                        LazyVStack(alignment: .leading, spacing: 0) {
-                            ForEach(Array(library.log.enumerated()), id: \.offset) { index, line in
-                                Text(line).font(.system(.caption, design: .monospaced)).textSelection(.enabled).id(index)
-                            }
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    }
+                SelectableLogView(text: library.log.joined(separator: "\n"))
                     .frame(height: 170)
-                    .onChange(of: library.log.count) { _, count in reader.scrollTo(count - 1, anchor: .bottom) }
-                }
             }
         }
         .padding(12)
