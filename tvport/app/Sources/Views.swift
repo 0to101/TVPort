@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 import UniformTypeIdentifiers
 
 @main
@@ -7,19 +8,55 @@ struct TVPortApp: App {
 
     var body: some Scene {
         WindowGroup("TVPort") {
-            ContentView().environmentObject(library).frame(minWidth: 1000, minHeight: 620)
+            ContentView().environmentObject(library).frame(width: 1000).frame(minHeight: 620)
+                .background(InitialWindowSize())
         }
-        .windowResizability(.contentMinSize)
+        .windowResizability(.contentSize)
+        .defaultSize(width: 1000, height: 670)
+        .windowToolbarStyle(.unified)
         .commands { TVPortCommands(library: library) }
         Settings {
             DefaultBuildFolderSettings().environmentObject(library)
         }
         Window("", id: "manage-saves") {
             SaveManagerView().environmentObject(library)
+                .frame(width: 1000)
+                .background(InitialWindowSize())
+                .toolbar {
+                    // Native toolbar chrome gives both windows the same corner treatment.
+                    ToolbarItem(placement: .principal) {
+                        Spacer().frame(width: 1).accessibilityHidden(true)
+                    }
+                }
+                .toolbarBackground(.hidden, for: .windowToolbar)
         }
-        .defaultSize(width: 980, height: 780)
-        .windowResizability(.contentMinSize)
+        .windowToolbarStyle(.unified)
+        .defaultSize(width: 1000, height: 670)
+        .windowResizability(.contentSize)
     }
+}
+
+// SwiftUI's defaultSize yields to saved window frames. Apply the requested
+// starting size once after attachment, while allowing later height changes.
+private struct InitialWindowSize: NSViewRepresentable {
+    final class Marker: NSView {
+        private weak var sizedWindow: NSWindow?
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            guard let window, window !== sizedWindow else { return }
+            sizedWindow = window
+            DispatchQueue.main.async { [weak self, weak window] in
+                guard let self, let window, self.window === window else { return }
+                let top = window.frame.maxY
+                window.setContentSize(NSSize(width: 1000, height: 670))
+                window.setFrameTopLeftPoint(NSPoint(x: window.frame.minX, y: top))
+            }
+        }
+    }
+
+    func makeNSView(context: Context) -> Marker { Marker() }
+    func updateNSView(_ view: Marker, context: Context) {}
 }
 
 struct ContentView: View {

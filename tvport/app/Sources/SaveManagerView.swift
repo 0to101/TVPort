@@ -127,6 +127,9 @@ struct SaveManagerView: View {
                                 }
                             }
                                 .modifier(GameSelectionStyle(selected: gameID == app.id))
+                                // Offset the native list inset and the selection padding
+                                // so the artwork aligns with the Games heading.
+                                .padding(.leading, -14)
                                 .tag(app.id)
                                 .listRowInsets(EdgeInsets(top: 5, leading: 0, bottom: 5, trailing: 0))
                                 .listRowSeparator(.hidden)
@@ -143,9 +146,10 @@ struct SaveManagerView: View {
                     gameDetails.padding(.leading, 12)
                 }.frame(minWidth: 580)
             }
-            .frame(minHeight: 550)
+            .frame(minHeight: 350)
         }
-        .padding(20).frame(minWidth: 860, minHeight: 720)
+        .padding(.horizontal, 20).padding(.bottom, 20).padding(.top, 10)
+        .frame(minWidth: 860, minHeight: 620)
         .interactiveDismissDisabled(busy)
         .task {
             library.icloudAvailable = FileManager.default.fileExists(atPath: NSHomeDirectory() + "/Library/Mobile Documents/com~apple~CloudDocs")
@@ -227,7 +231,7 @@ struct SaveManagerView: View {
                     if loadingSource { ProgressView().controlSize(.small) }
                 }
                 Text("Import adds a new copy. Restore backs up the Apple TV save first.")
-                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
             Divider()
             Text("Saved Copies & Backups").font(.headline)
