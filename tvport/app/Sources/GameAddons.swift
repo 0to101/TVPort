@@ -46,11 +46,7 @@ struct GameAddonsCard: View {
     var body: some View {
         if let game = library.current {
             VStack(alignment: .leading, spacing: 10) {
-                HStack {
-                    Text("Updates & DLC").font(.headline)
-                    Spacer()
-                    Button("Add Files…") { choosingFiles = true }.disabled(library.isBusy)
-                }
+                Button("Add Files…") { choosingFiles = true }.disabled(library.isBusy)
                 if library.checkingAddonGame == game.id {
                     HStack { ProgressView().controlSize(.small); Text("Checking game compatibility…") }
                 } else {
@@ -79,9 +75,7 @@ struct GameAddonsCard: View {
                         .font(.caption).foregroundStyle(.secondary)
                 }
             }
-            .padding(14)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 10))
             .fileImporter(isPresented: $choosingFiles, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
                 if case .success(let urls) = result { library.attachAddons(urls, to: game.id) }
             }

@@ -182,7 +182,6 @@ struct GameView: View {
                     Header()
                     SetupBanner()
                     if let notice = library.notice { NoticeBar(text: notice) }
-                    GameAddonsCard()
                     if let info = library.info, !info.prepared, info.sources.isEmpty {
                         NoticeBar(text: "This folder has no .nsp, .xci, .nsz or .xcz files. TVPort builds only from games you dumped from your own Switch.")
                     }
@@ -408,6 +407,9 @@ struct SettingsForm: View {
         Form {
             Section("Build folder") {
                 GameBuildFolderSettings()
+            }
+            Section("Updates & DLC") {
+                GameAddonsCard()
             }
             Section("Apple TV") {
                 Picker("Device", selection: $library.device) {
