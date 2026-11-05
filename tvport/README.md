@@ -129,6 +129,8 @@ The protected copy comes back by itself when the save folder is empty. Build & I
 
 **Manage Saves** opens a separate window with the native games installed on the selected Apple TV, including games absent from the Mac library. Select a game to see its save slots and these actions:
 
+Saved backup records are loaded from this Mac and accessible iCloud Drive folders before contacting the TV. When the TV is unavailable, **Saved Games** still lets you browse previous backups and open their save files in Finder. Devices with saved backups remain selectable even if Xcode cannot currently discover them. Import, restore and new backups require a reachable TV and an accessible installed game; an offline backup does not imply the game is still installed. iCloud-only files must be downloaded and accessible locally to browse them offline.
+
 - **Import Saves to Apple TV:** opens a folder picker, then asks you to confirm the game, save slot and selected folder before backing up and importing. Choose the folder containing the save files, for example from Ryujinx, another compatible emulator, or a native Mac game. Files must match the game and its save format. Quit the Mac game before copying its save.
 - **Back Up to Mac:** makes a read-only copy of the selected Apple TV save slot. **Show in Finder** reveals the ordinary save folder for use with a compatible Mac game or emulator.
 - **Back Up All Saves:** copies every available player and shared save slot from supported games installed on the selected Apple TV. Empty slots are skipped; failures are reported while other backups continue. Each successful copy appears in that game’s Previous Backups and can be restored individually.

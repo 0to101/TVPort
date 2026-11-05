@@ -174,6 +174,33 @@ class Saves(unittest.TestCase):
         self.assertEqual(Path(result['backup']).joinpath('data.bin').read_bytes(), b'original TV progress')
         self.assertEqual(self.tool.history('tv', self.device.bundle)[0]['status'], 'exported')
 
+    def test_saved_games_and_history_work_without_device_access(self):
+        self.tool.export('tv', self.device.bundle, 'save')
+        self.tool.export('tv', self.device.bundle, 'save.p-other')
+        with patch.object(self.device, 'devicectl_json', side_effect=AssertionError('Offline browsing contacted the TV')):
+            catalog = self.tool.saved_games('tv')
+            self.assertEqual([g['id'] for g in catalog['apps']], [self.device.bundle])
+            self.assertEqual(catalog['apps'][0]['version'], '1')
+            self.assertEqual(catalog['devices'][0]['id'], 'tv')
+            self.assertEqual(len(self.tool.history('tv', self.device.bundle)), 2)
+            self.assertEqual(self.tool.saved_games('another-tv')['apps'], [])
+            self.assertEqual(self.tool.saved_games()['devices'][0]['id'], 'tv')
+
+    def test_saved_games_read_legacy_cloud_records_and_ignore_incomplete_backups(self):
+        self.device.ICLOUD = self.root / 'iCloud'; self.device.ICLOUD.mkdir()
+        cloud = SaveImporter(self.device, icloud=True)
+        result = cloud.export('tv', self.device.bundle, 'save')
+        folder = Path(result['backup']); folder.rename(folder.parent / 'before')
+        record = folder.parent / 'record.json'
+        data = json.loads(record.read_text()); data.pop('version'); data.pop('title_id')
+        record.write_text(json.dumps(data))
+        broken = cloud.home / 'broken'; broken.mkdir(); (broken / 'record.json').write_text('[]')
+        with patch.object(self.device, 'devicectl_json', side_effect=AssertionError('TV must not be queried')):
+            local = SaveImporter(self.device)
+            self.assertEqual(len(local.saved_games('tv')['apps']), 1)
+            data['backup_ready'] = False; record.write_text(json.dumps(data))
+            self.assertEqual(local.saved_games('tv')['apps'], [])
+
     def test_legacy_before_folder_is_renamed_and_still_restores(self):
         result = self.tool.export('tv', self.device.bundle, 'save')
         folder = Path(result['backup'])

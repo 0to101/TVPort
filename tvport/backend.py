@@ -1012,6 +1012,8 @@ def cmd_save_import(args) -> None:
     try:
         if args.command == 'installed-games':
             answer = {'apps': importer.apps(args.device)}
+        elif args.command == 'saved-games':
+            answer = importer.saved_games(args.device)
         elif args.command == 'save-targets':
             answer = {'slots': importer.targets(args.device, args.bundle), 'backups': importer.history(args.device, args.bundle)}
         elif args.command == 'save-source':
@@ -1041,6 +1043,8 @@ def main() -> int:
     commands.add_parser('devices')
     installed = commands.add_parser('installed-games')
     installed.add_argument('--device', required=True)
+    saved = commands.add_parser('saved-games')
+    saved.add_argument('--device', default='')
     targets = commands.add_parser('save-targets')
     targets.add_argument('--device', required=True)
     targets.add_argument('--bundle', required=True)
@@ -1116,7 +1120,7 @@ def main() -> int:
             REPO = unpack_engine(HERE, DATA)
         {'devices': cmd_devices, 'inspect': cmd_inspect, 'preview': cmd_preview, 'build': cmd_build, 'backup': cmd_backup, 'launch': cmd_launch, 'diagnose': cmd_diagnose,
          'doctor': cmd_doctor, 'setup': cmd_setup, 'autobackup': cmd_autobackup,
-         **{name: cmd_save_import for name in ('installed-games', 'save-targets', 'save-source', 'save-history', 'import-save', 'export-save', 'export-all-saves', 'restore-save')}}[args.command](args)
+         **{name: cmd_save_import for name in ('installed-games', 'saved-games', 'save-targets', 'save-source', 'save-history', 'import-save', 'export-save', 'export-all-saves', 'restore-save')}}[args.command](args)
     except Failure as failure:
         if streamed:
             emit('error', message=str(failure))

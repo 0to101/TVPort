@@ -47,6 +47,10 @@ struct SaveManagerView: View {
     @State private var gameID = ""
     @State private var slot = "save"
     @State private var apps: [InstalledSaveGame] = []
+    @State private var savedDevices: [AppleTV] = []
+    @State private var online = false
+    @State private var availableApps: Set<String> = []
+    @State private var connectionNotice: String?
     @State private var slots: [SaveSlot] = []
     @State private var backups: [ImportedSaveBackup] = []
     @State private var source: SaveSource?
@@ -64,38 +68,44 @@ struct SaveManagerView: View {
 
     private var game: InstalledSaveGame? { apps.first { $0.id == gameID } }
     private var busy: Bool { library.transferringSaves }
+    private var devices: [AppleTV] {
+        library.devices + savedDevices.filter { saved in !library.devices.contains { $0.id == saved.id } }
+    }
     private var canTransfer: Bool {
-        game?.compatible == true && !device.isEmpty && slots.contains { $0.id == slot }
+        online && availableApps.contains(gameID) && game?.compatible == true && !device.isEmpty && slots.contains { $0.id == slot }
             && !loadingApps && !loadingSlots && !loadingSource && !library.isBusy
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text("Manage Saves").font(.title2.weight(.semibold))
-            Text("Choose a game installed on your Apple TV to import a save folder, back up saves to your Mac, or restore a previous backup.")
+            Text("Manage game saves and browse backups offline.")
                 .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             HStack {
                 Picker("Apple TV", selection: $device) {
                     Text("Choose Apple TV").tag("")
-                    ForEach(library.devices) { Text($0.title).tag($0.id) }
+                    ForEach(devices) { Text($0.title).tag($0.id) }
                 }
                 Button("Refresh") { Task { await loadApps() } }.disabled(device.isEmpty || loadingApps || busy)
                 Button("Back Up All Saves") { Task { await backUpAll() } }
-                    .disabled(device.isEmpty || loadingApps || loadingSlots || library.isBusy || !apps.contains { $0.compatible })
+                    .disabled(!online || device.isEmpty || loadingApps || loadingSlots || library.isBusy || availableApps.isEmpty)
             }.disabled(busy)
             Toggle("Keep backups in iCloud Drive", isOn: $library.icloudBackups)
                 .disabled(library.isBusy)
-            Text("Applies to new automatic backups, manual backups, and backups made before import or restore. Copies are stored in iCloud Drive → TVPort Saves.")
-                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                .help("Keep new automatic and manual backups, including originals saved before import or restore, in iCloud Drive → TVPort Saves.")
             if library.icloudBackups && !library.icloudAvailable {
                 Label("iCloud Drive is unavailable on this Mac. Backups are kept locally until it is available.", systemImage: "icloud.slash")
                     .font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
             }
             operationStatus
+            if let connectionNotice {
+                Label(connectionNotice, systemImage: "wifi.slash").foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             HStack(alignment: .top, spacing: 0) {
                 VStack(alignment: .leading, spacing: 10) {
                     HStack {
-                        Text("Installed Games").font(.title3.weight(.semibold))
+                        Text(online ? "Games" : "Saved Games").font(.title3.weight(.semibold))
                         if loadingApps { ProgressView().controlSize(.small) }
                     }
                     List(selection: $gameID) {
@@ -116,7 +126,7 @@ struct SaveManagerView: View {
                     }
                     .listStyle(.plain)
                     .contentMargins(.horizontal, 0, for: .scrollContent)
-                    .disabled(busy || loadingApps)
+                    .disabled(busy)
                     Toggle("Show other apps", isOn: $showAllApps).font(.caption).disabled(busy)
                 }
                 .frame(minWidth: 190, idealWidth: 220, maxWidth: 280)
@@ -132,10 +142,10 @@ struct SaveManagerView: View {
         .task {
             library.icloudAvailable = FileManager.default.fileExists(atPath: NSHomeDirectory() + "/Library/Mobile Documents/com~apple~CloudDocs")
             if library.devices.isEmpty { await library.refreshDevices() }
-            device = library.device ?? library.devices.first?.id ?? ""
+            if device.isEmpty { device = library.device ?? devices.first?.id ?? "" }
         }
         .task(id: device) { await loadApps() }
-        .task(id: gameID) { await loadSlots() }
+        .task(id: device + "|" + gameID + "|" + String(online)) { await loadSlots() }
         .fileImporter(isPresented: $choosingSource, allowedContentTypes: [.folder]) { result in
             guard case .success(let url) = result else { return }
             let requestedGame = gameID, requestedDevice = device, requestedSlot = slot
@@ -167,41 +177,39 @@ struct SaveManagerView: View {
 
     private var gameDetails: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text(game.map { $0.name + ($0.version.isEmpty ? "" : " · \($0.version)") } ?? "Choose an installed game")
+            Text(game.map { $0.name + ($0.version.isEmpty ? "" : " · \($0.version)") } ?? "Choose a game")
                 .font(.title3.weight(.semibold))
             if let game, !game.compatible {
                 Text(game.reason)
                     .font(.caption).foregroundStyle(.secondary)
-            } else if !loadingApps && !device.isEmpty && apps.isEmpty {
-                Text("No apps loaded. Wake the Apple TV and press Refresh.").foregroundStyle(.secondary)
+            } else if !loadingApps && apps.isEmpty {
+                Text("No saved backups found. Connect the Apple TV and press Refresh to back up a game.").foregroundStyle(.secondary)
             }
             if game?.compatible == true {
-                HStack {
+                if online && availableApps.contains(gameID) { HStack {
                     Picker("Save slot", selection: $slot) {
                         ForEach(slots) { Text("\($0.name) (\($0.files) files)").tag($0.id) }
                     }
                     if loadingSlots { ProgressView().controlSize(.small) }
-                }.disabled(busy || loadingSlots)
-                Text("Use Default player for a normal save. Device/shared save is only for games that use a separate device save. Choose the folder containing the actual save files, not the whole emulator folder.")
-                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                }.disabled(busy || loadingSlots) }
                 Divider()
                 HStack {
                     Button("Import Saves to Apple TV…") { source = nil; choosingSource = true }
                         .buttonStyle(.borderedProminent).disabled(!canTransfer)
+                        .help("Import this game’s save folder from Ryujinx, another compatible emulator, or a Mac game. Choose the folder containing the save files, not the whole emulator folder.")
                     Button("Back Up to Mac") { Task { await transfer(command: "export-save") } }
                         .disabled(!canTransfer)
+                        .help("Copy the selected save slot to your Mac. Open the backup in Finder to use it with a compatible emulator or Mac game.")
                     if loadingSource { ProgressView().controlSize(.small) }
                 }
-                Text("Import a compatible save for this game from an emulator such as Ryujinx, or from another Mac game. TVPort closes the Apple TV game and backs up its current save before importing or restoring. You can restore that backup from Previous Backups.")
-                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                Text("Back Up to Mac copies the selected save to your Mac. Use Show in Finder to access the files and copy them into a compatible emulator or Mac game’s save folder.")
+                Text("Import and restore back up the current save first.")
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
             Divider()
             Text("Previous Backups").font(.headline)
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 12) {
-                    if backups.isEmpty { Text("Backups made before import or restore, and copies exported to this Mac, appear here.").foregroundStyle(.secondary) }
+                    if backups.isEmpty { Text("No backups for this game yet.").foregroundStyle(.secondary) }
                     ForEach(backups) { backup in
                         HStack {
                             VStack(alignment: .leading, spacing: 3) {
@@ -241,7 +249,7 @@ struct SaveManagerView: View {
     }
 
     private func backUpAll() async {
-        guard !device.isEmpty, !library.isBusy else { return }
+        guard online, !device.isEmpty, !library.isBusy else { return }
         library.transferringSaves = true; error = nil; message = nil; resultFolder = nil
         defer { library.transferringSaves = false }
         do {
@@ -254,24 +262,52 @@ struct SaveManagerView: View {
     }
 
     private func loadApps() async {
-        guard !device.isEmpty, !busy else { return }
+        guard !busy else { return }
         let requested = device
-        loadingApps = true; apps = []; gameID = ""; slots = []; backups = []; error = nil; message = nil
+        let previousGame = gameID
+        loadingApps = true; online = false; availableApps = []; apps = []; slots = []; backups = []; error = nil; message = nil; connectionNotice = nil
         defer { if requested == device { loadingApps = false } }
         struct Answer: Decodable { let apps: [InstalledSaveGame] }
+        struct SavedAnswer: Decodable { let apps: [InstalledSaveGame]; let devices: [AppleTV] }
+        do {
+            let saved = try await Backend.ask(SavedAnswer.self, ["saved-games", "--device", requested])
+            guard requested == device, !Task.isCancelled else { return }
+            savedDevices = saved.devices
+            if requested.isEmpty {
+                device = library.device ?? devices.first?.id ?? ""
+                return
+            }
+            apps = saved.apps
+            gameID = apps.contains { $0.id == previousGame } ? previousGame : (apps.first?.id ?? "")
+            await loadHistory()
+        } catch {
+            guard requested == device, !Task.isCancelled else { return }
+            self.error = "Saved backups could not be read: " + error.localizedDescription
+        }
+        guard !requested.isEmpty else { return }
         do {
             let answer = try await Backend.ask(Answer.self, ["installed-games", "--device", requested])
             guard requested == device, !Task.isCancelled else { return }
-            apps = answer.apps
-            if let current = library.current {
-                gameID = apps.first { $0.compatible && !$0.title_id.isEmpty && $0.title_id.caseInsensitiveCompare(current.titleID) == .orderedSame }?.id ?? ""
+            availableApps = Set(answer.apps.filter { $0.compatible }.map(\.id))
+            apps = (answer.apps + apps.filter { saved in !answer.apps.contains { $0.id == saved.id } })
+                .sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+            if !apps.contains(where: { $0.id == gameID }) {
+                gameID = apps.first { $0.compatible && !$0.title_id.isEmpty && $0.title_id.caseInsensitiveCompare(library.current?.titleID ?? "") == .orderedSame }?.id
+                    ?? apps.first { $0.compatible }?.id ?? ""
             }
-        } catch { if requested == device && !Task.isCancelled { self.error = error.localizedDescription } }
+            online = true
+        } catch {
+            if requested == device && !Task.isCancelled {
+                connectionNotice = "Apple TV offline · Saved backups are available."
+            }
+        }
     }
 
     private func loadSlots() async {
         slots = []; backups = []; message = nil; resultFolder = nil
         guard game?.compatible == true, !busy else { loadingSlots = false; return }
+        await loadHistory()
+        guard online, availableApps.contains(gameID), !Task.isCancelled else { loadingSlots = false; return }
         let requestedGame = gameID, requestedDevice = device
         loadingSlots = true; error = nil
         defer { if requestedGame == gameID && requestedDevice == device { loadingSlots = false } }
@@ -280,7 +316,11 @@ struct SaveManagerView: View {
             let answer = try await Backend.ask(Answer.self, ["save-targets", "--device", requestedDevice, "--bundle", requestedGame])
             guard requestedGame == gameID, requestedDevice == device, !Task.isCancelled else { return }
             slots = answer.slots; backups = answer.backups; slot = "save"
-        } catch { if requestedGame == gameID && !Task.isCancelled { self.error = error.localizedDescription } }
+        } catch {
+            if requestedGame == gameID && requestedDevice == device && !Task.isCancelled {
+                connectionNotice = "Apple TV saves unavailable · Saved backups are available."
+            }
+        }
         await loadHistory()
     }
 

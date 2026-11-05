@@ -203,6 +203,34 @@ class SaveImporter:
                 continue
         return sorted(records, key=lambda r: r['date'], reverse=True)
 
+    def saved_games(self, device=''):
+        """Discover completed local/cloud backups without contacting an Apple TV."""
+        devices, apps = set(), {}
+        for p in (p for root in self.roots for p in root.glob('*/record.json')):
+            try:
+                r = json.loads(p.read_text())
+                if not isinstance(r, dict) or not r.get('backup_ready') or not r.get('previous_files', 0):
+                    continue
+                owner, bundle = r['device'], r['bundle']
+                if not isinstance(owner, str) or not owner or not isinstance(bundle, str) or not bundle:
+                    continue
+                if not (p.parent / 'Save Files').is_dir() and not (p.parent / 'before').is_dir():
+                    continue
+                devices.add(owner)
+                if owner != device:
+                    continue
+                match = TITLE.search(bundle)
+                candidate = dict(id=bundle, name=r.get('game') or bundle, version=r.get('version') or '',
+                                 title_id=r.get('title_id') or (match.group(1).upper() if match else ''),
+                                 compatible=True, reason='', date=float(r.get('date', 0)))
+                if bundle not in apps or candidate['date'] > apps[bundle]['date']:
+                    apps[bundle] = candidate
+            except (OSError, ValueError, KeyError, TypeError):
+                continue
+        return dict(devices=[dict(id=d, name='Apple TV (' + d[-6:] + ')', model=None, os=None,
+                                  connected=False, developer_mode=False) for d in sorted(devices)],
+                    apps=sorted(apps.values(), key=lambda a: (a['name'].casefold(), a['id'])))
+
     def stop_game(self, device, app):
         processes = self.query('device', 'info', 'processes', '--device', device)
         for p in processes.get('runningProcesses', []):
@@ -258,7 +286,7 @@ class SaveImporter:
             after = original.stat()
             if (stamp.st_size, stamp.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
                 self.fail('The source save changed while it was being copied. Quit the game on your Mac and try again. No Apple TV saves were changed.')
-        record = dict(device=device, bundle=bundle, game=app['name'], slot=slot, date=time.time(),
+        record = dict(device=device, bundle=bundle, game=app['name'], version=app.get('version', ''), title_id=app.get('title_id', ''), slot=slot, date=time.time(),
                       status='preparing', previous_files=0, backup_ready=False, restored_from=restore_id)
         def save_record():
             (work / 'record.json').write_text(json.dumps(record, indent=2))
@@ -416,7 +444,7 @@ class SaveImporter:
         if relevant(files) != relevant(after):
             self.fail('The game saved during the export. Close the game and try again.')
         count = sum(p.is_file() for p in before.rglob('*'))
-        record = dict(device=device, bundle=bundle, game=app['name'], slot=slot, date=time.time(),
+        record = dict(device=device, bundle=bundle, game=app['name'], version=app.get('version', ''), title_id=app.get('title_id', ''), slot=slot, date=time.time(),
                       status='exported', previous_files=count, backup_ready=True)
         (work / 'record.json').write_text(json.dumps(record, indent=2))
         return dict(files=count, backup=str(before), message=f'{count} save files copied to this Mac. Use Show in Finder to open them.')
