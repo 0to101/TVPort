@@ -196,7 +196,9 @@ struct GameView: View {
                     }
                     if let diagnosis = library.diagnosis { DiagnosisCard(diagnosis: diagnosis) }
                 }
-                .padding(20)
+                .padding(.horizontal, 20)
+                .padding(.bottom, 20)
+                .padding(.top, 6)
             }
             if library.run != .idle || !library.stage.isEmpty || !library.log.isEmpty {
                 Divider()
