@@ -107,16 +107,26 @@ static void aoc_locate(void) {
 // Why a slim build found no usable game files: the verdict on Documents/romfs.img (the first of romfs_document_images), in the log and for the screen (front_ios_boot_message). NULL when the build has no romfs.id
 static char g_boot_message[640];
 const char *front_ios_boot_message(void) { return g_boot_message[0] ? g_boot_message : NULL; }
-// Why this device cannot run the games: its GPU has no BC texture formats, which the games' textures use and the host does not decompress (dm/gfx/tex/README.md; the A16 and older,
-// GitHub issue #704), so the screen says so instead of Metal aborting at the game's first BC texture. NULL on a supported device. Called by startGame (front_ios.m) once the launcher has set
+// Why this device cannot run the games: no Metal device, or (on iOS) no hardware BC texture support (GitHub issue #704).
+// TVPort's tvOS host decodes BC textures in nvn_mtl.m, so hardware BC support is not a startup requirement there.
+// NULL on a supported device. Called by startGame (front_ios.m) once the launcher has set
 // its switches: this makes the process's first Metal device, and Metal reads MTL_HUD_ENABLED then; checked at launch, it kept the launcher's Performance HUD off (GitHub issue #840)
 const char *front_ios_device_check(void) {
     static char msg[320]; static int done;
     if (done++) return msg[0] ? msg : NULL;
-    id<MTLDevice> gpu = MTLCreateSystemDefaultDevice();   // the system default device, the one the graphics layers take (mtl_init repeats this check for the other routes)
-    if (gpu.supportsBCTextureCompression) return NULL;
-    snprintf(msg, sizeof msg, "This device's GPU (%s) cannot read BC-compressed textures, which the games use. It needs an iPhone 15 Pro or newer (A17 Pro chip or later) or an iPad with an M1 chip or later.",
-             gpu ? gpu.name.UTF8String : "no Metal device");
+    id<MTLDevice> gpu = MTLCreateSystemDefaultDevice();   // the system default device, the one the graphics layers take
+    if (!gpu) {
+        snprintf(msg, sizeof msg, "No Metal GPU is available on this device.");
+    } else {
+        if (gpu.supportsBCTextureCompression) return NULL;
+#if TARGET_OS_TV
+        fprintf(stderr, "boot: GPU %s has no hardware BC texture support; using TVPort's texture decoder.\n", gpu.name.UTF8String);
+        return NULL;
+#else
+        snprintf(msg, sizeof msg, "This device's GPU (%s) cannot read BC-compressed textures, which the games use. It needs an iPhone 15 Pro or newer (A17 Pro chip or later) or an iPad with an M1 chip or later.",
+                 gpu.name.UTF8String);
+#endif
+    }
     fprintf(stderr, "[RED] boot: %s\n", msg);
     return msg;
 }
