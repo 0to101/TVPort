@@ -20,7 +20,7 @@ Like nxnative, it is not an emulator: the game's own code runs on the Apple chip
 
 ## App preview
 
-These screenshots use fictional games, dummy artwork and sample save records. No real games or personal save data are shown.
+These screenshots use fictional games, dummy artwork and sample save records.
 
 ![TVPort game library and build settings with dummy games](docs/images/tvport/main-window.png)
 
