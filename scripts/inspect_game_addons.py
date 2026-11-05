@@ -58,6 +58,7 @@ def main():
         repo = Path(__file__).resolve().parents[1]
         env = dict(os.environ)
         env['PATH'] = os.pathsep.join(nsp.TOOL_PATHS + [env.get('PATH', '')])
+        nsp.configure_dotnet(env)
         bases, extras = source_files([args.folder]), source_files(args.source)
         # Extractor progress belongs on stderr; stdout is one JSON response.
         with contextlib.redirect_stdout(sys.stderr), nsp.package_title_reader(repo, args.keys, env) as reader:
