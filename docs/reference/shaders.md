@@ -318,11 +318,15 @@ Finding, keying and translating shaders (`dm/gfx/tools/shader_split.py`, `dmsh_b
 
 ### Unity 6 Shader objects
 
+- **Unity 6000.3:** stripped players use Shader hash `57f0dd2d4ef24437b4655529a673a936`. The version-4 layout adds `m_AssetLocalIdentifierInFile` after the GUID; without it the shader split stops because no matching tree can be borrowed. TVPort backports the exact-hash layout from nxnative commit `2670e6ada859bd0c88d57c4ecc3ad6d6bd05db18`, leaving older layouts unchanged. Found on MECCHA Hide And Seek (Unity 6000.3.11f1, provisional profile): all 124 Shader objects decode to their exact ends. This validates parsing, not Apple TV gameplay.
+
 - Read with no change: Hollow Knight: Silksong's 2,068 Addressables bundles carry their type trees (they report the engine version `0.0.0`, Unity's stripped version string), so no layout had to be written out.
 - BALL x PIT keeps most of its shaders in the player's loose serialized files (`resources.assets`, `sharedassets1.assets`, the built-in resources), which have no type trees; they borrow the `Shader` tree its 10 shader bundles carry (`shader_split.py` defers a file that raises `NoTree` to a second pass), so it needed no layout either.
 - **Found on:** [Hollow Knight: Silksong](../../dm/games/010013C00E930000/README.md) (Unity 6000.0.50f1): 2,450 stage shaders: 1,189 vertex, 1,193 pixel, 67 compute and one geometry shader, which does not build; 11 of them are the player's own in `main`. [BALL x PIT](../../dm/games/010086A022444000/README.md) (6000.0.62f1): 38,099 shaders, most of them in the loose files. [Silver Pines](../../dm/games/0100D5B026844000/README.md) (6000.3.15f1): 56,386 stage shaders in its Addressables bundles, read with no change.
 
 ### Unity ComputeShader objects
+
+- **Unity 6000.3:** hash `43a0948a3f403068c0b31bff90ba0c9a` adds `resType` to resources and uses a `staticvector` for thread-group size. TVPort backports nxnative commit `ba366d26a24d5018cd095947187314e8526e0ca4` so these kernels are not omitted as unknown stripped objects. An independent wire fixture checks the resource fields, exact object consumption and shader-split output. All 11 ComputeShader objects in MECCHA Hide And Seek decode to their exact ends; together with its Shader objects, this covers eight serialized files. No game data is included in the tests.
 
 - **Symptom:** the 3D battle scene was black behind a correct UI, with `[RED] shader 854a8afc9d07f88d is not in the shader map` and `the dispatched program has no compute shader`.
 - **Cause:** `DM_NVN_SHDUMP` saved the program; its code bytes were in `Data/sharedassets2.assets`, uncompressed, inside a `ComputeShader` (class 72): the post-processing stack's colour grading LUT baker (`Lut3DBaker#KGenLut3D_AcesTonemap`), so the LUT the scene is graded through stayed black. The split read only `Shader` objects. A `ComputeShader` holds per platform variant a list of kernels, each with its unique variants; a variant's `code` is the program code of a `Shader` subprogram (the 0x60-byte stage header, only the compute block present) and its `threadGroupSize` matches control +0x748.
