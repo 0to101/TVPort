@@ -233,7 +233,7 @@ final class Library: ObservableObject {
     }
 
     func setTopShelfArtwork(_ url: URL?) {
-        update { $0.topShelfArtwork = url?.path; $0.topShelfCrop = url == nil ? nil : ArtworkCrop() }
+        update { $0.topShelfArtwork = url?.path; $0.topShelfCrop = nil }
         schedulePreview()
     }
 

@@ -101,10 +101,32 @@ func frontLayer(_ art: CGImage, _ w: Int, _ h: Int) -> CGImage {   // transparen
     return c.makeImage()!
 }
 
-func shelf(_ art: CGImage, _ w: Int, _ h: Int) -> CGImage {   // Top Shelf: flat and opaque, the art whole unless it is wide
+// The wide asset includes 200 points of horizontal bleed on each side of the
+// 1920x720 composition. Keep that composition identical in the standard asset,
+// the wide asset's center and the preview; never fit artwork to the bleed width.
+// tvOS extends the static banner below this region for its full-screen backdrop.
+func shelfContent(_ art: CGImage, _ w: Int, _ h: Int) -> CGImage {
     let c = bitmap(w, h)
-    c.draw(backLayer(art, w, h), in: CGRect(x: 0, y: 0, width: w, height: h))
-    if !wide(art) { c.draw(art, in: fitRect(art, w, h, inset: 0.86)) }
+    let area = CGRect(x: 0, y: 0, width: w, height: h)
+    c.setFillColor(CGColor(srgbRed: 0.05, green: 0.05, blue: 0.07, alpha: 1))
+    c.fill(area)
+    c.draw(blurred(art, w, h), in: area)
+    // Automatic preserves the whole source. An explicit crop already has the
+    // 8:3 visible aspect ratio, so fitting it fills the composition exactly.
+    c.draw(art, in: fitRect(art, w, h, inset: 1))
+    return c.makeImage()!
+}
+
+func shelf(_ art: CGImage, _ w: Int, _ h: Int) -> CGImage {
+    let visibleWidth = min(w, h * 8 / 3)
+    let content = shelfContent(art, visibleWidth, h)
+    if visibleWidth == w { return content }
+    let c = bitmap(w, h)
+    let area = CGRect(x: 0, y: 0, width: w, height: h)
+    c.setFillColor(CGColor(srgbRed: 0.05, green: 0.05, blue: 0.07, alpha: 1))
+    c.fill(area)
+    c.draw(blurred(art, w, h), in: area)
+    c.draw(content, in: CGRect(x: (w - visibleWidth) / 2, y: 0, width: visibleWidth, height: h))
     return c.makeImage()!
 }
 
@@ -169,10 +191,10 @@ if args[2] == "--preview" {
 
 let environment = ProcessInfo.processInfo.environment
 let customShelf = environment["DM_TOP_SHELF_ART"].flatMap { $0.isEmpty ? nil : loadImage($0) }
-let shelfArt = cropArtwork(customShelf ?? art, environment: environment, prefix: "DM_SHELF", ratio: 29.0 / 9.0)
+let shelfArt = cropArtwork(customShelf ?? art, environment: environment, prefix: "DM_SHELF", ratio: 8.0 / 3.0)
 if args[2] == "--shelf-preview" {
     guard args.count == 4 else { fail("--shelf-preview needs an output path") }
-    writePNG(shelf(shelfArt, 1160, 360), URL(fileURLWithPath: args[3]))
+    writePNG(shelf(shelfArt, 960, 360), URL(fileURLWithPath: args[3]))
     exit(0)
 }
 let catalog = URL(fileURLWithPath: args[2]), brand = catalog.appendingPathComponent("AppIcon.brandassets")

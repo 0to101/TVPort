@@ -42,7 +42,7 @@ Add a folder holding your game's `.nsp` or `.xci` files, pick your Apple TV, and
 
 ### Separate Top Shelf cover
 
-**Top Shelf Cover** accepts PNG or JPEG images. The drop area previews the wide 29:9 format (recommended 2320 × 720 pixels) with independent framing, zoom and horizontal/vertical position controls. It uses the game artwork by default; **Use Game Artwork** removes the custom cover. The generated app includes standard and wide Top Shelf sizes. Changes apply at the next Build & Install.
+**Top Shelf Cover** accepts PNG or JPEG images. The drop area previews the central 8:3 composition (recommended source size 1920 × 720 pixels) with independent framing, zoom and horizontal/vertical position controls. Automatic framing preserves the whole image over a blurred background. The 2320 × 720 wide asset adds 200 pixels of background on each side, keeping important artwork out of those outer edges. It uses the game artwork by default; **Use Game Artwork** removes the custom cover. The generated app includes standard and wide Top Shelf sizes. Changes apply at the next Build & Install.
 
 ### Updates and DLC from other folders
 

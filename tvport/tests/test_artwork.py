@@ -68,16 +68,42 @@ for layer in ["Back", "Front"] {
 }
 assert(pixels(preview.makeImage()!) == pixels(installed.makeImage()!))
 // The independent wide crop keeps its own zoom and offset, without touching icon geometry.
-let wideCanvas = bitmap(580, 360)
-wideCanvas.draw(original, in: CGRect(x: 0, y: 0, width: 580, height: 360))
+let wideCanvas = bitmap(640, 360)
+wideCanvas.draw(original, in: CGRect(x: 0, y: 0, width: 640, height: 360))
 let wideOriginal = wideCanvas.makeImage()!
 for (x, y) in [(-1.0, -1.0), (0.0, 0.0), (1.0, 1.0)] {
-    let cropped = cropArtwork(wideOriginal, environment: ["DM_SHELF_CROP_SCALE": "2", "DM_SHELF_CROP_X": String(x), "DM_SHELF_CROP_Y": String(y)], prefix: "DM_SHELF", ratio: 29.0 / 9.0)
-    assert(cropped.width == 290 && cropped.height == 90)
-    let expected = wideOriginal.cropping(to: CGRect(x: 290 * (x + 1) / 2, y: 270 * (y + 1) / 2, width: 290, height: 90))!
+    let cropped = cropArtwork(wideOriginal, environment: ["DM_SHELF_CROP_SCALE": "2", "DM_SHELF_CROP_X": String(x), "DM_SHELF_CROP_Y": String(y)], prefix: "DM_SHELF", ratio: 8.0 / 3.0)
+    assert(cropped.width == 320 && cropped.height == 120)
+    let expected = wideOriginal.cropping(to: CGRect(x: 320 * (x + 1) / 2, y: 240 * (y + 1) / 2, width: 320, height: 120))!
     assert(pixels(cropped) == pixels(expected))
 }
-print("Icon and wide cover crop geometry passed")
+// Edge markers reproduce a title near the edge of a wide banner. Automatic
+// framing must retain both; the wide asset's bleed is not part of the preview.
+let banner = bitmap(2320, 720)
+banner.setFillColor(CGColor(srgbRed: 0, green: 0, blue: 1, alpha: 1))
+banner.fill(CGRect(x: 0, y: 0, width: 2320, height: 720))
+banner.setFillColor(CGColor(srgbRed: 1, green: 0, blue: 0, alpha: 1))
+banner.fill(CGRect(x: 0, y: 0, width: 100, height: 720))
+banner.setFillColor(CGColor(srgbRed: 0, green: 1, blue: 0, alpha: 1))
+banner.fill(CGRect(x: 2220, y: 0, width: 100, height: 720))
+let marked = banner.makeImage()!
+_ = shelfSet(marked, "Standard", 1920, 720, in: out)
+_ = shelfSet(marked, "Wide", 2320, 720, in: out)
+for scale in [1, 2] {
+    let standard = loadImage(out.appendingPathComponent("Standard.imageset/shelf@\(scale)x.png").path)
+    let extended = loadImage(out.appendingPathComponent("Wide.imageset/shelf@\(scale)x.png").path)
+    assert(standard.width == 1920 * scale && standard.height == 720 * scale)
+    assert(extended.width == 2320 * scale && extended.height == 720 * scale)
+    let visible = extended.cropping(to: CGRect(x: 200 * scale, y: 0, width: 1920 * scale, height: 720 * scale))!
+    assert(pixels(standard) == pixels(visible))
+}
+let visiblePreview = shelf(marked, 960, 360)
+assert(visiblePreview.width == 960 && visiblePreview.height == 360)
+let raw = [UInt8](pixels(visiblePreview))
+let left = (180 * 960 + 10) * 4, right = (180 * 960 + 949) * 4
+assert(raw[left] > 240 && raw[left + 1] < 10) // red left-edge marker
+assert(raw[right] < 10 && raw[right + 1] > 240) // green right-edge marker
+print("Crop geometry, cover edge preservation and standard/wide asset parity passed")
 '''
         with tempfile.TemporaryDirectory() as folder:
             script = Path(folder) / 'check.swift'

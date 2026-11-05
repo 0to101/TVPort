@@ -1,5 +1,12 @@
 # Packing
 
+## TVPort Top Shelf preview and visible composition
+
+- **Symptom:** a title visible in the Mac cover preview is cut off at the side of the Apple TV Home Screen.
+- **Cause:** TVPort previewed the entire 2320×720 wide asset, independently filled the 1920×720 standard asset, and placed artwork in the outer width of the wide asset. The TV photo is consistent with those outer edges being cropped. Apple's [Top Shelf guidance](https://developer.apple.com/design/human-interface-guidelines/top-shelf) specifies a 2320×720 static asset and describes adaptation to a 1920-wide full-screen backdrop.
+- **Fix:** compose the cover once in a central 1920×720 region, extend the wide asset with 200 pixels of background on each side, and preview only the central region at 960×360. Automatic framing fits the whole image; explicit zoom/position crops use the visible 8:3 ratio. New custom covers default to Automatic. The UI recommends the composition size, while export still emits Apple's required asset sizes.
+- **Checked:** synthetic edge markers remain visible in Automatic; the central region of the exported wide asset matches the standard asset pixel-for-pixel at both scales. Manual crop geometry is checked separately. Rebuilding the reported game and confirming its appearance on the physical TV remains necessary.
+
 ## TVPort external updates and DLC
 
 - **Symptom:** updates or DLC stored outside the base folder were not selectable, and TVPort's Apple TV project omitted already extracted DLC.
