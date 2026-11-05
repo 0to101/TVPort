@@ -98,7 +98,10 @@ def main() -> int:
         uv, uv_version, uv_licenses = uv_files(args.uv)
         commit = run(['git', '-C', REPO, 'rev-parse', '--short=12', 'HEAD']).strip()
         dirty = bool(run(['git', '-C', REPO, 'status', '--porcelain', '--untracked-files=no', '--', *ENGINE, 'tvport']).strip())
-        chain = re.search(r'#define DMSH_CHAIN "(.*)"', (REPO / 'dm/gfx/nvn/dmsh_chain.h').read_text()).group(1)
+        chain_match = re.search(r'#define DMSH_CHAIN "(.*)"', (REPO / 'dm/gfx/nvn/dmsh_chain.h').read_text())
+        if chain_match is None:
+            raise RuntimeError('The engine shader chain header has no DMSH_CHAIN definition')
+        chain = chain_match.group(1)
         print(f'engine {engine_id}: {len(files)} files from {commit}{" with uncommitted changes" if dirty else ""}, shader chain {chain}')
         args.out.mkdir(parents=True, exist_ok=True)
         app = args.out.resolve() / 'TVPort.app'

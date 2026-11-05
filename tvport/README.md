@@ -78,7 +78,17 @@ It cannot carry these, so **Setup** checks each and gives the command or the pla
 
 Measured after these changes on the same scene load: 264 textures took 47 ms instead of 271 ms. Once the game had seen a scene, a run had 1 long frame instead of dozens.
 
-The shaders are iOS Metal libraries, which tvOS 27 loads, so these changes leave the shader chain (`d1043b780a74`) as it was and existing shader builds stay valid. A change to the chain means rebuilding every game's shaders.
+The shaders are iOS Metal libraries, which tvOS 27 loads. TVPort 1.1 used chain `d1043b780a74`; the local 1.2 engine update uses `0ad559cdbb28`, matching the nxnative revision below. Existing games need their shaders rebuilt when next built with this engine. Previously installed game apps keep their own engine and shaders.
+
+### Local 1.2 engine update
+
+The engine is merged from nxnative revision `777a5f6c618a38cd2d7f795f465466fb56920534`, the upstream revision pinned by NX2Apple v1.1.1-rc2. This is the nxnative core with TVPort’s Apple TV adaptations, not NX2Apple’s complete patched engine. Unity 6000.3 parsing is included upstream. The pinned Metal compiler is `32023.922` (Xcode 27.2).
+
+TVPort keeps its save/player integration, controller routing and button swap, BC texture decoding for the A15, and memory residency controls. UIKit touch menus and haptics stay iPhone-only. tvOS has no WebKit: HTML applets keep the existing no-web-view fallback, and actual HTML menus remain unsupported. Multi-program handoff records the next program for reopening from Home; tvOS cannot offer the iPhone’s relaunch notification.
+
+The 1.2 work is separate from the stable 1.1 source and release. A successful unsigned synthetic tvOS build checks compilation and linking without game files or a signing slot. Game shader compilation and Apple TV gameplay regression runs are deferred at the owner’s request; the upstream game list does not establish Apple TV compatibility.
+
+Validation: the Mac host and unsigned tvOS fixture compile and link; 84 TVPort tests, 19 Unity parser tests, iOS tool tests (42 passed, one skipped), GPU pool residency/chunk/readback tests, controller command tests, frame-limit tests and operating-environment tests pass. The Python lint ratchet has no new findings. The broad tool suite exposed an existing metadata mismatch: the TVPort frame-step patch also supports TOTK 1.4.2, while the profile registers only 1.4.3. The same registry test fails in the stable 1.1 source. The tested 1.4.2 patch is retained rather than changing which shader profile a build selects.
 
 ## Why games stutter or close
 

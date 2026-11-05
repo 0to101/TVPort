@@ -14,7 +14,7 @@ targets:
     platform: tvOS
     sources:
       - path: Sources
-        excludes: [Info.plist, Launcher.swift, LauncherRow.swift, LauncherSettings.swift, DmIOS-Bridging-Header.h, SaveSync.m, CloudSaves.m]
+        excludes: [Info.plist, Launcher.swift, LauncherRow.swift, LauncherSettings.swift, GameMenu.swift, DmHostingController.swift, DmIOS-Bridging-Header.h, SaveSync.m, CloudSaves.m]
       - path: SourcesTV
       - path: Gen/embed.S
       - path: Gen/dm          # Rewriter tables (*.fixups.tsv / gates / cuts / obs) + shader map / c1 list / warm-up list

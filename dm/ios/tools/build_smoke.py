@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""CI build of the production iOS project with synthetic embedded modules.
+"""CI build of the production iOS or tvOS project with synthetic embedded modules.
 
+Use --platform tvos for the Apple TV target (the default is ios).
 Requires Xcode and XcodeGen; GAME (or DM_GAME) selects the host profile.
 No game files, keys, shaders, signing or device are needed. The resulting app
 is a compile/link fixture, not a runnable game. All Xcode output stays under
@@ -23,7 +24,9 @@ import game
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output', required=True, type=Path, help='new scratch directory for inputs and build products')
+    parser.add_argument('--platform', choices=('ios', 'tvos'), default='ios')
     args = parser.parse_args()
+    tv = args.platform == 'tvos'
     profile = game.load(os.environ.get('GAME') or os.environ.get('DM_GAME'))
     root = args.output.resolve()
     root.mkdir(parents=True)  # Never overwrite an existing project or build.
@@ -34,7 +37,9 @@ def main():
     tables.mkdir(parents=True)
     for name in ('Sources', 'tools'):
         (project / name).symlink_to(ios / name, target_is_directory=True)
-    shutil.copyfile(ios / 'project.yml', project / 'project.yml')
+    if tv:
+        (project / 'SourcesTV').symlink_to(ios / 'SourcesTV', target_is_directory=True)
+    shutil.copyfile(ios / ('project_tv.yml' if tv else 'project.yml'), project / 'project.yml')
     assets = gen / 'Assets.xcassets'
     assets.mkdir()
     (assets / 'Contents.json').write_text(json.dumps({'info': {'author': 'xcode', 'version': 1}}))
@@ -62,6 +67,8 @@ def main():
                               check=True, text=True, stdout=subprocess.PIPE if capture else None)
 
     config = run(sys.executable, ios / 'tools/gen_build.py', REPO / 'dm/host', gen, capture=True).stdout
+    if tv:
+        config = config.replace('-framework IOKit', '').replace('-framework WebKit', '')  # Neither framework exists on tvOS.
     flags = run(sys.executable, ios / 'tools/gen_embed.py', patched, gen / 'embed.S', *modules, capture=True).stdout.strip()
     (gen / 'dm.xcconfig').write_text(config + f'OTHER_LDFLAGS = $(inherited) $(DM_FRAMEWORKS) {flags}\n')
     run('xcodegen', 'generate')
@@ -81,13 +88,13 @@ def main():
     run(sys.executable, ios / 'tools/gen_resources.py', project, romfs, marker,
         shaders, f'b-{chain}', '', derived, chain_h)
     run('xcodebuild', '-project', project / 'DmIOS.xcodeproj', '-scheme', 'DmIOS',
-        '-configuration', 'Release', '-destination', 'generic/platform=iOS',
+        '-configuration', 'Release', '-destination', 'generic/platform=tvOS' if tv else 'generic/platform=iOS',
         '-derivedDataPath', derived, '-jobs', '3',
         'CODE_SIGNING_ALLOWED=NO', 'CODE_SIGNING_REQUIRED=NO', 'CODE_SIGN_IDENTITY=',
         f'DM_XCODE_OUTPUT_ROOT={derived}', f'SYMROOT={derived}/Build/Products',
         f'OBJROOT={derived}/Build/Intermediates.noindex', 'build')
 
-    app = derived / 'Build/Products/Release-iphoneos/DmIOS.app'
+    app = derived / ('Build/Products/Release-appletvos/DmIOS.app' if tv else 'Build/Products/Release-iphoneos/DmIOS.app')
     info = plistlib.loads((app / 'Info.plist').read_bytes())
     executable = app / info['CFBundleExecutable']
     if not executable.is_file():
@@ -98,7 +105,7 @@ def main():
             raise RuntimeError(f'Resource staging failed: {packed}')
     if (app / '_CodeSignature').exists() or (app / 'embedded.mobileprovision').exists():
         raise RuntimeError('The smoke-test app must be unsigned')
-    print(f'iOS smoke build passed: {executable}', flush=True)
+    print(f'{args.platform} smoke build passed: {executable}', flush=True)
 
 
 if __name__ == '__main__':

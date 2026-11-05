@@ -8,9 +8,9 @@ from nso_asm import ADRP, B, NOP, STP_PRE
 # sites) the same, which the consumers read. Until the host has decided a step (the first frames) the step is the measured frame time (timing frame +0xd8, 19.2 MHz
 # ticks), clamped to [1 / cap, 1 / 15 s]; game time that ran ahead after a short frame (the "lead", at most 0.25 s; totk-mobile) is paid back by later frames. Prerendered movies hold 30 (the host's movie flag, state +4, hle_movie.c
 # dm_movie_playing), the D-pad menu fade starts at full rate (FPSLocker's fix at main+0x1fbc80) and the swapchain argument at main+0xbe14a8 becomes 1 as in FPSLocker.
-# The addresses here are 1.4.3's; SITES has each build's. 1.4.2's were found by the sites' bytes and layout (each pattern occurs once, at the same distances from its neighbours)
+# The addresses here are 1.4.3's; sites has each build's. 1.4.2's were found by the sites' bytes and layout (each pattern occurs once, at the same distances from its neighbours)
 # and checked by disassembly; FPSLocker's 1.4.2 config patches the same frame step, reader and swapchain addresses and reads the same timing fields (+0x24, +0x50, frame +0xd8)
-SITES = {
+sites = {
     '277178b7dba1b6d4949a84778d4abc58': dict(step=0x2db18c, step_end=0x2db284, readers=((0x2daa54, 0x2daa6c, 19), (0x3e562c, 0x3e5638, 22)), fade=0x1fbc80, swap=0xbe14a8, scale=0xd5cc0, dyn=0xd5d80),   # 1.4.3
     '5cb42b1cf25469fb0635fd046453d843': dict(step=0x2d4e68, step_end=0x2d4f60, readers=((0x2d4730, 0x2d4748, 19), (0x37ea5c, 0x37ea68, 22)), fade=0x1064334, swap=0xbbf258, scale=0x10250c, dyn=0x1025cc),   # 1.4.2
 }
@@ -141,7 +141,7 @@ def frame_step_at(a):
     fs_put(a['dyn'], [B(a['dyn'], start)], 'dynamic resolution only at render scale 1.0')
   return frame_step
 
-FRAME_STEP = {build: frame_step_at(a) for build, a in SITES.items()}
+FRAME_STEP = {build: frame_step_at(a) for build, a in sites.items()}
 
 # How general each patch is and could be (dm/tools/docs_patches.py "Binding", listed in docs/agents/game-patches.md): what, its binding now, the loosest it could have (goal),
 # purpose, why; blocked or kept: why the gap stays open (cannot close yet, or left open on purpose); checked: what was checked on game files (else a judgement)

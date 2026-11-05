@@ -1,13 +1,13 @@
 // Engine frame limits kept in game memory (FPSLocker's evaluate_write entries): some engines cap their own frame rate with a value the host can raise. The target is the profile's
 // fps_target (DM_FPS_TARGET overrides; 0 = leave the game's own limit), the same key that drives Tears of the Kingdom's frame step (loader.c install_fps_state). Called on every present
 // (hle_nvn.c); the game sets the values after boot and may set them again, so each is written whenever it differs. Fixed addresses: each row runs only on the main build it was found in (AGENTS.md).
+// A target frame rate the game steps by needs no row either: the rewriter finds it by its readers in any build (dm/tools/fps_target.py, main's fixups FPS_TARGET_PTR / FPS_TARGET_FIELD).
 // Unreal Engine needs no row: the rewriter finds its console variables by their registered names in any build (dm/tools/ue_cvar.py, main's fixups UE_CVAR:<name>), and the host writes
 // the frame limit, the profile's ue_fps_cvar (t.MaxFPS, or a game's own variable its settings apply to t.MaxFPS: SHIN MEGAMI TENSEI V: Vengeance's Project.FrameRateLimit), and the
 // present interval, rhi.SyncInterval (nvn.SyncInterval in UE 4.18's Switch RHI: DRAGON QUEST XI S). Each is a TAutoConsoleVariable whose +0x10 points to its value, the game thread's
 // copy then the render thread's. The games' configs set the limit to 30 and the interval to 2 (their notes name the .ini files)
 #include "hle.h"
 #include <mach/mach.h>
-#include <stdatomic.h>
 
 // What a field holds: the frame rate as a float, double or int32, vsyncs per frame (60 / frame rate) as an int32, or the frame time in milliseconds as a float. Copies: consecutive copies of the
 // value (Unreal keeps one for the game thread, one for the render thread). A row with no pointer (ptr_off 0) has its field at main + field: a constant in main's read-only data, which the loader
@@ -181,6 +181,15 @@ static void fb_tick(int target, const char *src) {
     }
 }
 
+// The row of a target frame rate the game steps by, at the place the rewriter found (dm/tools/fps_target.py; main's fixups FPS_TARGET_PTR, FPS_TARGET_FIELD): an int32 frame rate in the
+// object a global points to, which the game's readers divide 60.0 by to step it, and which the game sets to 30 or 60 itself. Fire Emblem Fortune's Weave's gxc graphics object holds it
+// (+0x1dc; its present asks for interval 60 / target), so at 60 the game asks for interval 1 and steps by 1.0 a frame. 0 rows: not found in this main
+static int target_row(const module_t *m, lock_t *out) {
+    if (!m->fps_target_ptr) return 0;
+    *out = (lock_t){ "", "target frame rate", m->fps_target_ptr, m->fps_target_field, FPS_I32, 1, 0 };
+    return 1;
+}
+
 // The Unreal rows of this main: the profile's frame-limit variable and the present intervals, at the objects the rewriter found (0 rows: not an Unreal main). *missing: an Unreal main
 // (the rewriter found some of its variables) without the profile's frame-limit variable
 static int ue_rows(const module_t *m, lock_t *out, int *missing) {
@@ -195,33 +204,38 @@ static int ue_rows(const module_t *m, lock_t *out, int *missing) {
     return n;
 }
 
-// The frame rate the limits above were set to, once the first present has looked for them: 0 when none of them is in this main (a build the profile was not brought up on) or the target
-// is 0, -1 before. Presentation takes the profile's fps_target only from here or from the rewriter's frame step (hle_nvn.c fps_present_cap): a cap with nothing that changes the game's
-// own step showed the game's frames faster than it times them (Tears of the Kingdom 1.4.2, whose main has no frame step: present interval 2 shown at 60 fps, walking at twice the speed)
-static _Atomic int g_lock_target = -1;
-int dm_fps_lock_target(void) { return atomic_load(&g_lock_target); }
-
+// The running main's engine limiters, found once: by the first present (dm_fps_lock_tick) or by the graphics layer's present cap, which may ask first (dm_fps_lock_engine, from the acquire)
+static lock_t ue[3], target_lock; static const lock_t *rows[NLOCKS + 4]; static int nrow, nier, ue_missing; static uint8_t *base; static uint32_t display;
+static pthread_once_t g_found = PTHREAD_ONCE_INIT;
+static void lock_find(void) {
+    for (int i = 0; i < g_nmod; i++) if (!strcmp(g_mod[i].name, "main")) {
+        for (int k = 0; k < (int)(sizeof k_nier_dr / sizeof *k_nier_dr); k++) if (!strcmp(g_mod[i].build_id, k_nier_dr[k].build)) { base = g_mod[i].base; nier = 1; display = k_nier_dr[k].display; }
+        for (int k = 0; k < NLOCKS; k++) if (!strcmp(g_mod[i].build_id, k_locks[k].build)) { rows[nrow++] = &k_locks[k]; base = g_mod[i].base; }
+        if (target_row(&g_mod[i], &target_lock)) { rows[nrow++] = &target_lock; base = g_mod[i].base; }
+        int nue = ue_rows(&g_mod[i], ue, &ue_missing);
+        for (int k = 0; k < nue; k++) { rows[nrow++] = &ue[k]; base = g_mod[i].base; }
+    }
+    fb_find();
+}
+// Whether the host writes fps_target into an engine limiter of this main (a row for its build, NieR's frame interval, a target frame rate found by its readers, Unreal's variables or
+// Frostbite's simulation rate, found by name).
+// Without one, and without a frame step state page, nothing makes the game follow the cap, so the graphics layer keeps the game's own present interval (hle_nvn.c fps_present_cap):
+// presenting at a cap the game does not step by runs a fixed-step game fast or slow (Tears of the Kingdom 1.4.2 at 2x with DM_FPS_TARGET=60)
+int dm_fps_lock_engine(void) { pthread_once(&g_found, lock_find); return nrow || nier || fb.n; }
 void dm_fps_lock_tick(void) {
     dynamic_resolution_tick();   // separate from the FPS cap
-    static lock_t ue[3]; static const lock_t *rows[NLOCKS + 3]; static int state = -2, nrow, nlog[NLOCKS + 3], target, nier, ue_missing; static uint8_t *base; static const char *src; static uint32_t display;
+    static int state = -2, nlog[NLOCKS + 4], target; static const char *src;
     if (state == -1) return;
     if (state == -2) {
-        state = -1;
-        for (int i = 0; i < g_nmod; i++) if (!strcmp(g_mod[i].name, "main")) {
-            for (int k = 0; k < (int)(sizeof k_nier_dr / sizeof *k_nier_dr); k++) if (!strcmp(g_mod[i].build_id, k_nier_dr[k].build)) { base = g_mod[i].base; nier = 1; display = k_nier_dr[k].display; }
-            for (int k = 0; k < NLOCKS; k++) if (!strcmp(g_mod[i].build_id, k_locks[k].build)) { rows[nrow++] = &k_locks[k]; base = g_mod[i].base; }
-            int nue = ue_rows(&g_mod[i], ue, &ue_missing);
-            for (int k = 0; k < nue; k++) { rows[nrow++] = &ue[k]; base = g_mod[i].base; }
-        }
-        atomic_store(&g_lock_target, 0);   // until a limit below is found and set
-        fb_find(); if (!nrow && !nier && !fb.n && !ue_missing) return;
+        state = -1; pthread_once(&g_found, lock_find);
+        if (!nrow && !nier && !fb.n && !ue_missing) return;
         const char *e = getenv("DM_FPS_TARGET"); int t = e ? atoi(e) : DM_GAME_FPS_TARGET; src = e ? "DM_FPS_TARGET" : "game profile fps_target";
         if (t != 0 && t != 30 && t != 60) { LOG("[RED] DM_FPS_TARGET=%s: must be 0, 30 or 60; leaving the game's frame limit", e); t = 0; }
         if (t && ue_missing) LOG("[RED] main: Unreal %s not found by the rewriter (ue_cvar.py NAMES; game profile ue_fps_cvar): the game's own frame limit stays", DM_GAME_UE_FPS_CVAR);
         if (!nrow && !nier && !fb.n) return;
         if (!t) { for (int r = 0; r < nrow; r++) LOG("main: %s left as the game sets it (%s)", rows[r]->what, src); if (nier) LOG("main: NieR frame interval left as the game sets it (%s)", src);
                   if (fb.n) LOG("main: Frostbite simulation rate left as the game sets it (%s)", src); return; }
-        target = t; state = 0; atomic_store(&g_lock_target, t);
+        target = t; state = 0;
     }
     if (nier) {
         // NieR:Automata US/EU 1.0.3 (3c10ec35c5ef4c3686b4053afb0e58e7):
