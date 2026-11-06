@@ -31,6 +31,7 @@ static uint64_t face(NSString *category, char pressed) {
 
 int main(void) { @autoreleasepool {
     unsetenv("DM_PAD_SWAP_AB_XY");
+    unsetenv("DM_PAD_SWAP_AB"); unsetenv("DM_PAD_SWAP_XY");
     for (NSString *k in @[@"Xbox One", @"DualSense", @"HID"]) {   // by position: buttonA bottom (B), buttonB right (A), buttonX left (Y), buttonY top (X)
         assert(face(k, 'A') == DM_BTN_B); assert(face(k, 'B') == DM_BTN_A); assert(face(k, 'X') == DM_BTN_Y); assert(face(k, 'Y') == DM_BTN_X);
     }
@@ -50,6 +51,22 @@ int main(void) { @autoreleasepool {
     assert(face(@"Xbox One", 'A') == DM_BTN_B);
     assert(face(@"Switch Pro Controller", 'A') == DM_BTN_A);
     unsetenv("DM_PAD_SWAP_AB_XY");
+    for (int ab = 0; ab < 2; ++ab) for (int xy = 0; xy < 2; ++xy) {
+        setenv("DM_PAD_SWAP_AB", ab ? "1" : "0", 1);
+        setenv("DM_PAD_SWAP_XY", xy ? "1" : "0", 1);
+        for (NSString *category in @[@"Xbox One", @"Switch Pro Controller"]) {
+            int labelled = [category isEqualToString:@"Switch Pro Controller"];
+            assert(face(category, 'A') == ((labelled != ab) ? DM_BTN_A : DM_BTN_B));
+            assert(face(category, 'B') == ((labelled != ab) ? DM_BTN_B : DM_BTN_A));
+            assert(face(category, 'X') == ((labelled != xy) ? DM_BTN_X : DM_BTN_Y));
+            assert(face(category, 'Y') == ((labelled != xy) ? DM_BTN_Y : DM_BTN_X));
+        }
+    }
+    setenv("DM_PAD_SWAP_AB_XY", "1", 1);
+    setenv("DM_PAD_SWAP_AB", "0", 1); unsetenv("DM_PAD_SWAP_XY");
+    assert(face(@"Switch Pro Controller", 'A') == DM_BTN_A);
+    assert(face(@"Switch Pro Controller", 'X') == DM_BTN_Y);
+    unsetenv("DM_PAD_SWAP_AB_XY"); unsetenv("DM_PAD_SWAP_AB"); unsetenv("DM_PAD_SWAP_XY");
     TestPad *g = [TestPad new];   // nothing pressed, buttons nil: none
     assert(dm_pad_face((GCExtendedGamepad *)(id)g) == 0);
     printf("t_pad_apple OK\n");

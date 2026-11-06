@@ -21,6 +21,9 @@ static inline uint64_t dm_pad_face(GCExtendedGamepad *g) {
     if (!dm_pad_labelled(g.controller)) { GCControllerButtonInput *t = a; a = b; b = t; t = x; x = y; y = t; }   // by position: right A, bottom B, top X, left Y
     // Optional per-game override, applied after the controller's normal layout mapping.
     const char *swap = getenv("DM_PAD_SWAP_AB_XY");
-    if (swap && strcmp(swap, "1") == 0) { GCControllerButtonInput *t = a; a = b; b = t; t = x; x = y; y = t; }
+    const char *ab = getenv("DM_PAD_SWAP_AB"), *xy = getenv("DM_PAD_SWAP_XY");
+    int legacy = swap && strcmp(swap, "1") == 0;
+    if (ab ? strcmp(ab, "1") == 0 : legacy) { GCControllerButtonInput *t = a; a = b; b = t; }
+    if (xy ? strcmp(xy, "1") == 0 : legacy) { GCControllerButtonInput *t = x; x = y; y = t; }
     return (a.isPressed ? DM_BTN_A : 0) | (b.isPressed ? DM_BTN_B : 0) | (x.isPressed ? DM_BTN_X : 0) | (y.isPressed ? DM_BTN_Y : 0);
 }
