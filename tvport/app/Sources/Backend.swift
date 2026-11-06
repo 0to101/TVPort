@@ -195,7 +195,7 @@ enum Backend {
                 continuation.finish()
                 return
             }
-            do { try p.run() } catch {
+            do { try BuildActivity.run(p) } catch {
                 continuation.yield(.failed("Could not start the backend: \(error.localizedDescription)"))
                 continuation.finish()
             }
