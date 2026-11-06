@@ -1,6 +1,20 @@
-# TVPort 1.2
+# TVPort 1.2.3
 
 <img src="docs/images/tvport/app-icon.png" alt="TVPort app icon" width="128" height="128">
+
+## What’s new in TVPort 1.2.3
+
+- Added a build queue: prepare several games, see Building and numbered Queued badges, and remove waiting games. Stop or a failed build pauses the queue until you resume it.
+- Added each built game’s signing expiry, with a live countdown and local date and time.
+- Kept the Mac awake during setup, conversion, building and installation. The display can still turn off, and normal sleep resumes when the work finishes or stops.
+- Added a confirmation after a save is successfully restored and verified on Apple TV, with an in-app fallback when notifications are unavailable.
+- Automatically back up saves for all supported games installed on the selected Apple TV, including games built on another Mac.
+- Save automatic backups only when their contents change, keeping the newest 10 per game and player/save slot. Manual backups, local imports, safety backups and older unlabelled copies are preserved.
+- Kept saved backups available to browse during automatic backup, with clearer progress and retry messages. Builds can wait in the queue until backup finishes.
+- Added drag-to-position for App Icon and Top Shelf artwork, cached previews for faster switching, and Crop to fill as the default for new Top Shelf covers.
+- Fixed artwork disappearing after Stop and build results or installation messages appearing on the wrong game.
+
+See the [1.2.3 changelog](tvport/CHANGELOG-1.2.3.md) for validation and release details. Earlier features and instructions remain below.
 
 ## What’s new in TVPort 1.2
 
@@ -15,7 +29,7 @@
 
 Existing features and instructions remain below.
 
-Download [TVPort 1.2](https://github.com/0to101/TVPort/releases/tag/v1.2), See [the TVPort guide](tvport/README.md) for setup and build instructions.
+Download [TVPort 1.2.3](https://github.com/0to101/TVPort/releases/tag/v1.2.3). See [the TVPort guide](tvport/README.md) for setup and build instructions.
 
 ## Features retained from TVPort 1.1
 
@@ -30,7 +44,7 @@ This fork builds on [the original TVPort](https://github.com/68hctmzzjf-svg/TVPo
 - **Mac interface improvements:** a fixed-width sidebar, clearer setup status, revised buttons and spacing, game versions in save-manager headings, File-menu access to Settings and Manage Saves, and clearer Last Run Stats and Show Log actions. Removing the last library game no longer leaves the detail view referencing a deleted entry.
 - **Safer automatic save recovery:** installation checks for both working and persistent saves before restoring a backup, and skips recovery when it cannot verify that saves are absent.
 
-These fork-specific features are included in 1.2. The original project’s release downloads do not include them.
+These fork-specific features are included in 1.2.3. The original project’s release downloads do not include them.
 
 Play your own Nintendo Switch games on an Apple TV 4K. TVPort is a fork of [nxnative](https://github.com/seedds/nxnative) by seedds. It adds an Apple TV build of the engine and a Mac app that turns a game you own into an Apple TV app and installs it on your TV, with no command line.
 
