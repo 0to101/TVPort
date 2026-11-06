@@ -695,10 +695,28 @@ def backup_saves(game: Game, device: str, bundle: str, icloud: bool = False, att
 def restore_saves(game: Game, device: str, bundle: str) -> int:
     """Puts the newest backup back on a TV that has lost its saves. It never replaces a save that is there."""
     backup = latest_backup(game)
-    if not backup:
-        return 0
-    from save_import import SaveImporter
+    from save_import import SaveImporter, SLOT
     importer = SaveImporter(sys.modules[__name__])
+    sources = {p.relative_to(backup).as_posix(): p for p in backup.rglob('*')
+               if p.is_file() and SAVE_FILE.match(str(p.relative_to(backup)))} if backup else {}
+    # Prefer newer automatic managed copies, without promoting imported saves or
+    # safety backups into the game's active progress. Legacy backups remain usable.
+    seen = set()
+    for record in importer.history(device, bundle):
+        slot = record['slot']
+        if record['status'] != 'automatic-backup' or slot in seen or not SLOT.fullmatch(slot):
+            continue
+        seen.add(slot)
+        if record['date'] < (backup_time(backup) or 0):
+            continue
+        folder = Path(record['folder'])
+        files = {slot + '/' + p.relative_to(folder).as_posix(): p
+                 for p in folder.rglob('*') if p.is_file() and not p.is_symlink()}
+        if files:
+            sources = {name: path for name, path in sources.items() if not name.startswith(slot + '/')}
+            sources.update(files)
+    if not sources:
+        return 0
     try:
         listing = importer.listing(device, bundle)
         if any(SAVE_FILE.match(name.removeprefix('Caches/')) for name in listing if name.startswith('Caches/')):
@@ -713,12 +731,11 @@ def restore_saves(game: Game, device: str, bundle: str) -> int:
     except (Failure, OSError, ValueError):
         emit('log', line='Automatic save recovery skipped: existing saves could not be verified. No saves were replaced.')
         return 0
-    names = [p for p in backup.rglob('*') if p.is_file() and SAVE_FILE.match(str(p.relative_to(backup)))]
-    for path in names:
-        result = run(['xcrun', 'devicectl', 'device', 'copy', 'to', '--device', device, '--domain-type', 'appDataContainer', '--domain-identifier', bundle, '--source', path, '--destination', f'{CACHES}/{path.relative_to(backup)}'])
+    for name, path in sources.items():
+        result = run(['xcrun', 'devicectl', 'device', 'copy', 'to', '--device', device, '--domain-type', 'appDataContainer', '--domain-identifier', bundle, '--source', path, '--destination', f'{CACHES}/{name}'])
         if result.returncode:
             raise Failure(f'Could not put {path.name} back on the Apple TV: {result.stderr.strip()[-300:]}')
-    return len(names)
+    return len(sources)
 
 
 def write_env(game: Game, mode: str, texture_cap: int, players: str = '', render_scale: float = 1.0, thermal_cap: bool = True, fps_target: int = 0, swap_ab_xy: bool = False) -> Path:
@@ -951,25 +968,47 @@ def build_running() -> bool:
 
 
 def cmd_autobackup(args) -> None:
-    """One round of the app's automatic backups, for each built game in turn. It only reads the TV, as backup_saves does, and never launches, ends or installs anything.
-    A round is skipped while a build runs, as each build backs up first, and ends at the first game the TV does not answer for: it is asleep or off the network."""
+    """Read all supported installed games, including games built on another Mac.
+    Managed backups cover every player, including persistent-only saves, and
+    are available in Manage Saves even when there is no local build folder.
+    """
+    from save_import import SaveImporter
     out = {'state': 'done', 'games': {}, 'icloud': ICLOUD.is_dir()}
-    if build_running():
+    try:
+        lock = one_build_at_a_time()
+    except Failure:
         out['state'] = 'building'
-    for folder in args.folder if out['state'] == 'done' else []:
-        game = Game(Path(folder)) if Path(folder).is_dir() else None
-        app = game.earlier_app() if game and game.build else None
-        bundle = game and game.build and (game.state().get('bundle_id') or app and plistlib.loads((app / 'Info.plist').read_bytes())['CFBundleIdentifier'])
-        if not bundle:
-            continue   # never built, so never installed
+        print(json.dumps(out))
+        return
+    with lock:
+        importer = SaveImporter(sys.modules[__name__], icloud=args.icloud)
         try:
-            result = backup_saves(game, args.device, bundle, icloud=args.icloud, attempts=1)
-        except Failure as failure:
-            result = {'state': 'failed', 'message': str(failure)}
-        out['games'][folder] = {'state': result['state'], 'checked': time.time() if result['state'] in ('backed-up', 'unchanged') else None, **backup_info(latest_backup(game))}
-        if result['state'] == 'unavailable':   # asleep or off the network: each further game would wait as long
-            out['state'] = 'unreachable'
-            break
+            apps = [app for app in importer.apps(args.device) if app['compatible']]
+        except (Failure, OSError, ValueError) as failure:
+            out.update(state='unreachable', message=str(failure))
+            print(json.dumps(out))
+            return
+        local = {}
+        for folder in args.folder:
+            try:
+                game = Game(Path(folder)) if Path(folder).is_dir() else None
+                app = game.earlier_app() if game and game.build else None
+                bundle = game and game.build and (game.state().get('bundle_id') or app and plistlib.loads((app / 'Info.plist').read_bytes())['CFBundleIdentifier'])
+                if bundle:
+                    local[bundle] = (folder, game)
+            except (Failure, OSError, ValueError, KeyError):
+                continue
+        for app in apps:
+            bundle = app['id']
+            folder, game = local.get(bundle, (bundle, None))
+            try:
+                status = importer.automatic_backup(args.device, bundle)
+            except (Failure, OSError, ValueError) as failure:
+                status = {'state': 'failed', 'checked': None, 'message': str(failure)}
+            out['games'][folder] = status
+            if status['state'] == 'failed':
+                out['state'] = 'partial'
+            # A single inaccessible app must not prevent the other games being checked.
     print(json.dumps(out))
 
 

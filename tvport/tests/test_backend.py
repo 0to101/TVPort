@@ -407,6 +407,24 @@ class Saves(unittest.TestCase):
                     self.assertEqual(backend.restore_saves(game, 'd', 'b'), 0)
                 copy.assert_not_called()
 
+    def test_automatic_recovery_uses_new_managed_backup_without_local_snapshot(self):
+        with tempfile.TemporaryDirectory() as folder:
+            game = self.make_game(folder)
+            saved = Path(folder) / 'managed/Save Files'
+            saved.mkdir(parents=True)
+            (saved / 'progress.bin').write_bytes(b'latest progress')
+            record = dict(slot='save', status='automatic-backup', date=9999999999, folder=str(saved))
+            with patch('save_import.SaveImporter.history', return_value=[record]), \
+                 patch('save_import.SaveImporter.listing', return_value={}), \
+                 patch('save_import.SaveImporter.preferences', return_value={}), \
+                 patch.object(backend, 'run', return_value=SimpleNamespace(returncode=0)) as copy:
+                self.assertEqual(backend.restore_saves(game, 'd', 'b'), 1)
+                self.assertEqual(copy.call_args.args[0][-1], 'Library/Caches/save/progress.bin')
+            record['status'] = 'imported-copy'
+            with patch('save_import.SaveImporter.history', return_value=[record]), patch.object(backend, 'run') as copy:
+                self.assertEqual(backend.restore_saves(game, 'd', 'b'), 0)
+                copy.assert_not_called()
+
     def test_players_reach_the_app(self):
         with tempfile.TemporaryDirectory() as folder:
             game = self.make_game(folder)
@@ -548,3 +566,44 @@ class DiagnoseCommand(unittest.TestCase):
         result = json.loads(output.getvalue())
         self.assertEqual(result['run']['last_frame'], 3000)
         self.assertIn('memory up to frame', result['log'])
+
+
+class AutomaticInstalledBackups(unittest.TestCase):
+    def test_discovers_games_without_local_folders_and_continues_after_error(self):
+        from save_import import SaveImporter
+        apps = [dict(id='game-a', compatible=True), dict(id='game-b', compatible=True),
+                dict(id='system', compatible=False)]
+        def backup(device, bundle):
+            if bundle == 'game-a':
+                raise backend.Failure('App unavailable')
+            return dict(state='backed-up', checked=123)
+        with tempfile.TemporaryDirectory() as tmp, patch.object(backend, 'DATA', Path(tmp)), \
+             patch.object(SaveImporter, 'apps', return_value=apps), \
+             patch.object(SaveImporter, 'automatic_backup', side_effect=backup) as copy:
+            output = io.StringIO()
+            with redirect_stdout(output):
+                backend.cmd_autobackup(SimpleNamespace(device='tv', folder=[], icloud=False))
+            result = json.loads(output.getvalue())
+            self.assertEqual(result['state'], 'partial')
+            self.assertEqual(result['games']['game-a']['state'], 'failed')
+            self.assertEqual(result['games']['game-b']['state'], 'backed-up')
+            self.assertNotIn('system', result['games'])
+            self.assertEqual(copy.call_count, 2)
+
+    def test_offline_and_busy_rounds_never_attempt_exports(self):
+        from save_import import SaveImporter
+        with tempfile.TemporaryDirectory() as tmp, patch.object(backend, 'DATA', Path(tmp)), \
+             patch.object(SaveImporter, 'apps', side_effect=backend.Failure('Offline')) as apps, \
+             patch.object(SaveImporter, 'automatic_backup') as copy:
+            output = io.StringIO()
+            with redirect_stdout(output):
+                backend.cmd_autobackup(SimpleNamespace(device='tv', folder=[], icloud=False))
+            self.assertEqual(json.loads(output.getvalue())['state'], 'unreachable')
+            copy.assert_not_called()
+            apps.reset_mock()
+            with backend.one_build_at_a_time():
+                output = io.StringIO()
+                with redirect_stdout(output):
+                    backend.cmd_autobackup(SimpleNamespace(device='tv', folder=[], icloud=False))
+                self.assertEqual(json.loads(output.getvalue())['state'], 'building')
+            apps.assert_not_called()

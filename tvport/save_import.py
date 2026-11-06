@@ -445,7 +445,33 @@ class SaveImporter:
         return dict(files=files, backup=str(self.home) if saved else None, message=message,
                     saved=saved, errors=errors, skipped=skipped)
 
-    def export(self, device, bundle, slot, skip_empty=False):
+    def prune_automatic_backups(self, device, bundle, slot):
+        """Run only after a new verified backup is complete. Never prune user copies."""
+        automatic = [r for r in self.history(device, bundle)
+                     if r['slot'] == slot and r['status'] == 'automatic-backup']
+        for record in automatic[10:]:
+            work = Path(record['folder']).parent
+            if work.parent in self.roots and work.name == record['id'] and not work.is_symlink():
+                shutil.rmtree(work)
+
+    def automatic_backup(self, device, bundle):
+        saved, errors = [], []
+        for slot in self.targets(device, bundle):
+            try:
+                result = self.export(device, bundle, slot['id'], skip_empty=True, only_changed=True)
+                if result:
+                    saved.append(result)
+            except (self.b.Failure, OSError, ValueError) as error:
+                errors.append(f'{slot["name"]}: {error}')
+        latest = next((r for r in self.history(device, bundle) if r['status'] in ('exported', 'automatic-backup')), None)
+        return dict(state='failed' if errors else 'backed-up' if any(r['changed'] for r in saved) else 'unchanged' if saved else 'none',
+                    checked=time.time() if saved and not errors else None,
+                    last_backup=latest['id'] if latest else None, last_backup_time=latest['date'] if latest else None,
+                    last_backup_place=('icloud' if Path(latest['folder']).is_relative_to(self.b.ICLOUD) else 'mac')
+                        if latest and getattr(self.b, 'ICLOUD', None) else 'mac' if latest else None,
+                    errors=errors)
+
+    def export(self, device, bundle, slot, skip_empty=False, only_changed=False):
         if not SLOT.fullmatch(slot):
             self.fail('Invalid save slot.')
         app = self.app(device, bundle)
@@ -453,38 +479,57 @@ class SaveImporter:
         prefix = f'Caches/{slot}/'
         names = [n for n, f in files.items() if n.startswith(prefix) and not f.get('resources', {}).get('isDirectory')]
         work = self.home / uuid.uuid4().hex
-        before = work / 'Save Files'
-        before.mkdir(parents=True)
-        for name, f in files.items():
-            if name.startswith(prefix) and f.get('resources', {}).get('isDirectory'):
-                (before / name[len(prefix):]).mkdir(parents=True, exist_ok=True)
-        if not names:
-            prefs = self.preferences(device, bundle, files, work)
-            self.remote_hash(device, bundle, slot, files, prefs, work)
-            persistent = work / 'persistent' / ('save_device' if slot.endswith('_device') else 'save')
-            if persistent.is_dir():
-                shutil.copytree(persistent, before, dirs_exist_ok=True)
-            if not any(p.is_file() for p in before.rglob('*')):
-                if skip_empty:
-                    shutil.rmtree(work)
-                    return None
-                self.fail('This slot has no save files on the Apple TV yet.')
-        for name in names:
-            dest = before / name[len(prefix):]
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            self.copy('from', device, bundle, 'Library/' + name, dest)
-            expected = files[name].get('metadata', {}).get('size')
-            if not dest.is_file() or (expected is not None and dest.stat().st_size != expected):
-                self.fail('The copy was incomplete. Try exporting again.')
-        after = self.listing(device, bundle)
-        relevant = lambda data: {n: f.get('metadata') for n, f in data.items() if n.startswith(prefix)}
-        if relevant(files) != relevant(after):
-            self.fail('The game saved during the export. Close the game and try again.')
-        count = sum(p.is_file() for p in before.rglob('*'))
-        record = dict(device=device, bundle=bundle, game=app['name'], version=app.get('version', ''), title_id=app.get('title_id', ''), slot=slot, date=time.time(),
-                      status='exported', previous_files=count, backup_ready=True)
-        (work / 'record.json').write_text(json.dumps(record, indent=2))
-        return dict(files=count, backup=str(before), message=f'{count} save files copied to this Mac. Use Show in Finder to open them.')
+        try:
+            before = work / 'Save Files'
+            before.mkdir(parents=True)
+            for name, f in files.items():
+                if name.startswith(prefix) and f.get('resources', {}).get('isDirectory'):
+                    (before / name[len(prefix):]).mkdir(parents=True, exist_ok=True)
+            if not names:
+                prefs = self.preferences(device, bundle, files, work)
+                self.remote_hash(device, bundle, slot, files, prefs, work)
+                persistent = work / 'persistent' / ('save_device' if slot.endswith('_device') else 'save')
+                if persistent.is_dir():
+                    shutil.copytree(persistent, before, dirs_exist_ok=True)
+                if not any(p.is_file() for p in before.rglob('*')):
+                    if skip_empty:
+                        shutil.rmtree(work)
+                        return None
+                    self.fail('This slot has no save files on the Apple TV yet.')
+            for name in names:
+                dest = before / name[len(prefix):]
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                self.copy('from', device, bundle, 'Library/' + name, dest)
+                expected = files[name].get('metadata', {}).get('size')
+                if not dest.is_file() or (expected is not None and dest.stat().st_size != expected):
+                    self.fail('The copy was incomplete. Try exporting again.')
+            after = self.listing(device, bundle)
+            relevant = lambda data: {n: f.get('metadata') for n, f in data.items() if n.startswith(prefix)}
+            if relevant(files) != relevant(after):
+                self.fail('The game saved during the export. Close the game and try again.')
+            count = sum(p.is_file() for p in before.rglob('*'))
+            if only_changed:
+                # Compare the verified copy, not just timestamps. Never deduplicate against
+                # a local import or a safety backup of a different point in the game's history.
+                previous = next((r for r in self.history(device, bundle)
+                                 if r['slot'] == slot and r['status'] in ('exported', 'automatic-backup')), None)
+                if previous:
+                    old = Path(previous['folder'])
+                    paths = sorted(p.relative_to(before) for p in before.rglob('*') if p.is_file())
+                    old_paths = sorted(p.relative_to(old) for p in old.rglob('*') if p.is_file())
+                    if paths == old_paths and all((before / p).read_bytes() == (old / p).read_bytes() for p in paths):
+                        shutil.rmtree(work)
+                        return dict(files=count, backup=str(old), changed=False, message='The backup is already up to date.')
+            record = dict(device=device, bundle=bundle, game=app['name'], version=app.get('version', ''), title_id=app.get('title_id', ''), slot=slot, date=time.time(),
+                          status='automatic-backup' if only_changed else 'exported', previous_files=count, backup_ready=True)
+            (work / 'record.json').write_text(json.dumps(record, indent=2))
+            if only_changed:
+                self.prune_automatic_backups(device, bundle, slot)
+            return dict(files=count, backup=str(before), changed=True, message=f'{count} save files copied to this Mac. Use Show in Finder to open them.')
+        finally:
+            # Failed/empty/deduplicated exports must not accumulate hidden partial copies.
+            if not (work / 'record.json').is_file():
+                shutil.rmtree(work, ignore_errors=True)
 
 
 def stored_save_hash(data, into=None):

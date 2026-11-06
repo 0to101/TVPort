@@ -297,6 +297,61 @@ class Saves(unittest.TestCase):
         self.assertEqual(self.tool.history('tv', self.device.bundle)[0]['slot'], 'save.p-other')
         self.assertEqual(self.device.writes, [])
 
+    def test_automatic_backup_all_slots_deduplicates_and_keeps_game_running(self):
+        self.device.running = True
+        first = self.tool.automatic_backup('tv', self.device.bundle)
+        self.assertEqual(first['state'], 'backed-up')
+        self.assertEqual(len(self.tool.history('tv', self.device.bundle)), 2)
+        second = self.tool.automatic_backup('tv', self.device.bundle)
+        self.assertEqual(second['state'], 'unchanged')
+        self.assertEqual(len(self.tool.history('tv', self.device.bundle)), 2)
+        (self.device.remote / 'Library/Caches/save/data.bin').write_bytes(b'new progress')
+        third = self.tool.automatic_backup('tv', self.device.bundle)
+        self.assertEqual(third['state'], 'backed-up')
+        self.assertEqual(len(self.tool.history('tv', self.device.bundle)), 3)
+        self.assertTrue(self.device.running)
+        self.assertEqual(self.device.writes, [])
+
+    def test_automatic_retention_keeps_ten_per_player_and_never_prunes_user_copies(self):
+        manual = self.tool.export('tv', self.device.bundle, 'save')
+        safety = self.tool.export('tv', self.device.bundle, 'save')
+        record = Path(safety['backup']).parent / 'record.json'
+        data = json.loads(record.read_text()); data['status'] = 'imported'
+        record.write_text(json.dumps(data))
+        imported = self.tool.store_import('tv', self.device.bundle, 'save', self.source, 'Test Game', '1', '')
+        for number in range(13):
+            (self.device.remote / 'Library/Caches/save/data.bin').write_bytes(f'progress {number}'.encode())
+            self.tool.automatic_backup('tv', self.device.bundle)
+        history = self.tool.history('tv', self.device.bundle)
+        auto = [r for r in history if r['status'] == 'automatic-backup' and r['slot'] == 'save']
+        self.assertEqual(len(auto), 10)
+        self.assertEqual({(Path(r['folder']) / 'data.bin').read_bytes() for r in auto},
+                         {f'progress {number}'.encode() for number in range(3, 13)})
+        self.assertEqual(len([r for r in history if r['status'] == 'automatic-backup' and r['slot'] == 'save.p-other']), 1)
+        self.assertTrue(Path(manual['backup']).is_dir())
+        self.assertTrue(Path(safety['backup']).is_dir())
+        self.assertTrue(any(r['status'] == 'imported-copy' for r in history))
+        folders = set(self.tool.home.iterdir())
+        self.device.fail_backup = True
+        self.tool.automatic_backup('tv', self.device.bundle)
+        self.assertEqual(set(self.tool.home.iterdir()), folders)
+        self.assertEqual(len(self.tool.history('tv', self.device.bundle)), len(history))
+        self.assertEqual(self.device.writes, [])
+
+    def test_automatic_backup_preserves_other_slots_when_one_fails(self):
+        export = self.tool.export
+        def fail_one(device, bundle, slot, **kwargs):
+            if slot == 'save':
+                raise Failure('Slot unreadable')
+            return export(device, bundle, slot, **kwargs)
+        with patch.object(self.tool, 'export', side_effect=fail_one):
+            result = self.tool.automatic_backup('tv', self.device.bundle)
+        self.assertEqual(result['state'], 'failed')
+        self.assertIsNone(result['checked'])
+        self.assertEqual(len(result['errors']), 1)
+        self.assertEqual(len(self.tool.history('tv', self.device.bundle)), 1)
+        self.assertEqual(self.device.writes, [])
+
     def test_backup_all_finds_persistent_only_player_slots(self):
         packed, _ = packed_save()
         prefs = self.device.remote / ('Library/Preferences/' + self.device.bundle + '.plist')
