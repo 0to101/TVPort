@@ -13,7 +13,7 @@
 - Made Crop to fill the default for new App Icons and when choosing replacement artwork. Top Shelf uses the App Icon image unless a separate cover is selected, with a clearer Use App Icon Image action.
 - Added an in-app warning that Updates & DLC support is under development and may cause games to crash.
 
-Known issue: Snufkin reached gameplay with the newer engine without the game update, but the updated game still crashes during loading. The latest updated-game log repeats the same null-pointer fault as earlier tests. The cause remains under investigation; DLC has not been isolated as the cause. This is not a confirmed crash fix.
+Known issue: Snufkin reached gameplay with the newer engine without the game update, but the updated game still crashes during loading. The latest updated-game log repeats the same null-pointer fault as earlier tests. The cause remains under investigation; Updates has not been isolated as the cause. This is not a confirmed crash fix.
 
 
 ## What’s new in TVPort 1.2.3
