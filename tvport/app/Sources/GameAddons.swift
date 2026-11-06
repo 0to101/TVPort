@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 import UniformTypeIdentifiers
 
 struct GameAddon: Codable, Hashable, Identifiable {
@@ -24,7 +25,7 @@ struct GameAddonDropTarget: ViewModifier {
         content
             .contentShape(Rectangle())
             .overlay {
-                if targeted && !library.isBusy {
+                if targeted && library.canEditAddons {
                     RoundedRectangle(cornerRadius: 10)
                         .strokeBorder(Color.accentColor, style: StrokeStyle(lineWidth: 2, dash: [6]))
                         .allowsHitTesting(false)
@@ -32,7 +33,7 @@ struct GameAddonDropTarget: ViewModifier {
                 }
             }
             .dropDestination(for: URL.self) { urls, _ in
-                guard !library.isBusy, urls.contains(where: \.isFileURL) else { return false }
+                guard library.canEditAddons, urls.contains(where: \.isFileURL) else { return false }
                 library.attachAddons(urls, to: gameID)
                 return true
             } isTargeted: { targeted = $0 }
@@ -46,12 +47,16 @@ struct GameAddonsCard: View {
     var body: some View {
         if let game = library.current {
             VStack(alignment: .leading, spacing: 10) {
-                Button("Add Files…") { choosingFiles = true }.disabled(library.isBusy)
+                Button("Add Files…") { chooseFiles(for: game.id) }
+                    .disabled(!library.canEditAddons || choosingFiles)
                 if library.checkingAddonGame == game.id {
                     HStack { ProgressView().controlSize(.small); Text("Checking game compatibility…") }
                 } else {
                     Text("Drag and drop updates or DLC here").foregroundStyle(.secondary)
                 }
+                Label("Updates & DLC support is under development and may cause games to crash.", systemImage: "exclamationmark.triangle")
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
                 ForEach(game.addons ?? []) { addon in
                     HStack(alignment: .top) {
                         Image(systemName: addon.kind == "Update" ? "arrow.down.circle" : "puzzlepiece.extension")
@@ -65,7 +70,7 @@ struct GameAddonsCard: View {
                         }
                         Spacer()
                         Button { library.removeAddon(addon, from: game.id) } label: { Image(systemName: "minus.circle") }
-                            .buttonStyle(.borderless).disabled(library.isBusy)
+                            .buttonStyle(.borderless).disabled(!library.canEditAddons)
                             .help("Remove this attachment; the original file is kept")
                             .accessibilityLabel("Remove \(addon.name)")
                     }
@@ -76,9 +81,31 @@ struct GameAddonsCard: View {
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            .fileImporter(isPresented: $choosingFiles, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
-                if case .success(let urls) = result { library.attachAddons(urls, to: game.id) }
-            }
+        }
+    }
+
+    private func chooseFiles(for gameID: Game.ID) {
+        guard library.canEditAddons, !choosingFiles else { return }
+        // Present directly: this card sits inside SettingsForm's keys importer.
+        // Keep the destination captured even if the selected game changes.
+        let panel = NSOpenPanel()
+        panel.title = "Add Updates & DLC"
+        panel.message = "Choose NSP, XCI, NSZ or XCZ files, or a folder containing updates and DLC."
+        panel.prompt = "Add Files"
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = true
+        panel.allowedContentTypes = ["nsp", "xci", "nsz", "xcz"].compactMap { UTType(filenameExtension: $0) }
+        choosingFiles = true
+        let completion: (NSApplication.ModalResponse) -> Void = { response in
+            choosingFiles = false
+            guard response == .OK else { return }
+            library.attachAddons(panel.urls, to: gameID)
+        }
+        if let window = NSApp.keyWindow {
+            panel.beginSheetModal(for: window, completionHandler: completion)
+        } else {
+            panel.begin(completionHandler: completion)
         }
     }
 }

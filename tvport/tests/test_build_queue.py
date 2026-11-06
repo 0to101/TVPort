@@ -35,6 +35,10 @@ class BuildQueueTests(unittest.TestCase):
     }
     static func ask<T: Decodable>(_ type: T.Type, _ arguments: [String]) async throws -> T {
         reads += 1
+        if arguments.first == "check-addons" {
+            await Task.yield()
+            return try JSONDecoder().decode(type, from: Data(#"{"title_id":"0100000000000000","addons":[{"path":"/external/update.nsp","kind":"Update","title_id":"0100000000000800","version":1}]}"#.utf8))
+        }
         if arguments.first == "autobackup" {
             let json: String = try await withCheckedThrowingContinuation { backupContinuation = $0 }
             return try JSONDecoder().decode(type, from: Data(json.utf8))
@@ -79,17 +83,41 @@ import AppKit
     }
     @MainActor static func main() async {
         let library = Library()
-        let a = Game(folder: "/sample/A", name: "A")
-        let b = Game(folder: "/sample/B", name: "B")
+        var a = Game(folder: "/sample/A", name: "A"); a.swapAB = true
+        var b = Game(folder: "/sample/B", name: "B"); b.swapXY = true
         let c = Game(folder: "/sample/C", name: "C")
         library.games = [a, b, c]
         assert(a.topShelfCrop == ArtworkCrop())
+        assert(a.artworkCrop == ArtworkCrop())
         let old = try! JSONDecoder().decode(Game.self, from: Data(#"{"folder":"/old","name":"Old","titleID":"","mode":"handheld","texture":512,"showFPS":false}"#.utf8))
         assert(old.topShelfCrop == nil) // Preserve existing Automatic choices.
+        assert(old.artworkCrop == nil)
+        assert(!old.swapsAB && !old.swapsXY)
+        var legacy = old; legacy.folder = "/legacy"; legacy.swapABXY = true
+        let migrated = try! JSONDecoder().decode(Game.self, from: JSONEncoder().encode(legacy))
+        assert(migrated.swapsAB && migrated.swapsXY)
+        library.games = [migrated, old]
+        select(migrated, library)
+        library.setButtonSwap(ab: false)
+        assert(library.current!.swapsAB == false && library.current!.swapsXY)
+        library.add(folder: URL(fileURLWithPath: "/sample/new"))
+        assert(!library.current!.swapsAB && library.current!.swapsXY)
+        library.setButtonSwap(ab: true)
+        library.selection = old.id // Switching games must not change the saved default.
+        let reloaded = Library()
+        reloaded.add(folder: URL(fileURLWithPath: "/sample/reopened"))
+        assert(reloaded.current!.swapsAB && reloaded.current!.swapsXY)
+        reloaded.setButtonSwap(xy: false)
+        reloaded.add(folder: URL(fileURLWithPath: "/sample/AB-only"))
+        assert(reloaded.current!.swapsAB && !reloaded.current!.swapsXY)
+        assert(!old.swapsAB && !old.swapsXY)
+        print("PASS: legacy pair migration, explicit off, independent defaults and persistence")
+        library.games = [a, b, c]
         select(a, library)
         library.device = "TV-A"; library.team = "TEAM-A"
         library.build(install: true)
         await settle { Backend.starts.count == 1 }
+        assert(Backend.starts[0].contains("--swap-ab") && !Backend.starts[0].contains("--swap-xy"))
         library.build(install: true) // Duplicate active request ignored.
         select(b, library)
         assert(!library.showsRunForSelection)
@@ -118,6 +146,7 @@ import AppKit
         await settle { Backend.starts.count == 2 }
         let args = Backend.starts[1]
         assert(args[1] == b.id)
+        assert(args.contains("--swap-xy") && !args.contains("--swap-ab"))
         assert(args[args.firstIndex(of: "--device")! + 1] == "TV-B")
         assert(args[args.firstIndex(of: "--team")! + 1] == "TEAM-B")
         select(a, library)
@@ -194,7 +223,19 @@ import AppKit
             let backupTask = Task { await waiting.backUpEveryFewMinutes() }
             await settle { waiting.automaticallyBackingUp && Backend.backupContinuation != nil }
             assert(waiting.isBusy) // Transfers remain protected while browsing is allowed by the views.
+            assert(waiting.canEditAddons)
+            waiting.attachAddons([URL(fileURLWithPath: "/external/update.nsp")], to: a.id)
+            assert(waiting.checkingAddonGame == a.id && !waiting.canEditAddons)
+            await settle { waiting.checkingAddonGame == nil }
+            assert(waiting.automaticallyBackingUp)
+            assert(waiting.games[0].addons?.first?.path == "/external/update.nsp")
+            waiting.removeAddon(waiting.games[0].addons!.first!, from: a.id)
+            assert(waiting.games[0].addons?.isEmpty == true)
+            waiting.transferringSaves = true
+            assert(!waiting.canEditAddons)
+            waiting.transferringSaves = false
             waiting.build(install: true)
+            assert(!waiting.canEditAddons)
             select(b, waiting)
             waiting.build(install: true)
             waiting.removeQueuedBuild(b.id)

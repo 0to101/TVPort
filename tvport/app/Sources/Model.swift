@@ -29,7 +29,7 @@ struct Game: Codable, Identifiable, Hashable {
     var name: String
     var titleID = ""
     var artwork: String?
-    var artworkCrop: ArtworkCrop?
+    var artworkCrop: ArtworkCrop? = ArtworkCrop()
     var topShelfArtwork: String?
     var topShelfCrop: ArtworkCrop? = ArtworkCrop()
     var buildFolder: String?
@@ -42,7 +42,11 @@ struct Game: Codable, Identifiable, Hashable {
     var renderScale: Double?   // the 3D views at this fraction of the game's size, for games with a render-scale stub; nil = full size. Optional: library.json saved before it decodes as is
     var coolWhenHot: Bool?     // frame-step games hold 30 fps while the TV is thermally serious; nil = on (the engine's default)
     var fpsTarget: Int?        // 30 or 60 in place of the profile's fps_target; nil = the profile's
-    var swapABXY: Bool?       // nil = off, including libraries saved before this option existed
+    var swapABXY: Bool?       // Legacy combined choice, retained when reading older libraries.
+    var swapAB: Bool?
+    var swapXY: Bool?
+    var swapsAB: Bool { swapAB ?? swapABXY ?? false }
+    var swapsXY: Bool { swapXY ?? swapABXY ?? false }
     var showFPS = false
     var players: String?
     var addons: [GameAddon]?
@@ -122,13 +126,22 @@ final class Library: ObservableObject {
     }
     private var artworkPreviews: [Game.ID: CachedPreview] = [:]
     private var recentArtwork: [Game.ID] = []
-    private static let backupInterval: Double = 300
-    private static let retryInterval: Double = 60   // while the TV cannot be reached, so a round comes soon after it can
+    private static let backupInterval: Double = 30 * 60
 
     private static let store = Backend.data.appendingPathComponent("library.json")
     private static let previews = FileManager.default.temporaryDirectory.appendingPathComponent("TVPortPreviews", isDirectory: true)
 
+    private struct ControllerDefaults: Codable {
+        var swapAB: Bool
+        var swapXY: Bool
+    }
+    private var controllerDefaults: ControllerDefaults?
+    private static let controllerDefaultsFile = Backend.data.appendingPathComponent("controller-defaults.json")
+
     init() {
+        if let data = try? Data(contentsOf: Self.controllerDefaultsFile) {
+            controllerDefaults = try? JSONDecoder().decode(ControllerDefaults.self, from: data)
+        }
         if let data = try? Data(contentsOf: Self.store), let saved = try? JSONDecoder().decode([Game].self, from: data) { games = saved }
         selection = games.first?.id
         try? FileManager.default.createDirectory(at: Self.previews, withIntermediateDirectories: true)
@@ -166,6 +179,8 @@ final class Library: ObservableObject {
         buildBadge(for: gameID) ?? (built ? "Built" : "Ready to build")
     }
     var isBusy: Bool { buildQueue.active != nil || !buildQueue.pending.isEmpty || run == .running || settingUp || transferringSaves || automaticallyBackingUp || checkingAddonGame != nil }
+    // Package inspection reads local files; automatic save backups only read the TV.
+    var canEditAddons: Bool { buildQueue.active == nil && buildQueue.pending.isEmpty && run != .running && !settingUp && !transferringSaves && checkingAddonGame == nil }
     /// Unknown until the first check, which then does not hold anything back.
     var setupMissing: [Check] { setup?.checks.filter { !$0.ok } ?? [] }
     var bundleID: String? { info?.bundle_id }
@@ -183,9 +198,25 @@ final class Library: ObservableObject {
         save()
     }
 
+    func setButtonSwap(ab: Bool? = nil, xy: Bool? = nil) {
+        guard current != nil else { return }
+        update { game in
+            if let ab { game.swapAB = ab }
+            if let xy { game.swapXY = xy }
+        }
+        guard let game = current else { return }
+        controllerDefaults = ControllerDefaults(swapAB: game.swapsAB, swapXY: game.swapsXY)
+        if let data = try? JSONEncoder().encode(controllerDefaults) {
+            try? data.write(to: Self.controllerDefaultsFile, options: .atomic)
+        }
+    }
+
     func add(folder: URL) {
         if !games.contains(where: { $0.folder == folder.path }) {
-            games.append(Game(folder: folder.path, name: folder.lastPathComponent))
+            var game = Game(folder: folder.path, name: folder.lastPathComponent)
+            game.swapAB = controllerDefaults?.swapAB ?? current?.swapsAB ?? false
+            game.swapXY = controllerDefaults?.swapXY ?? current?.swapsXY ?? false
+            games.append(game)
             save()
         }
         selection = folder.path
@@ -203,14 +234,14 @@ final class Library: ObservableObject {
     }
 
     func attachAddons(_ urls: [URL], to gameID: Game.ID) {
-        guard !isBusy, let game = games.first(where: { $0.id == gameID }), !urls.isEmpty else { return }
+        guard canEditAddons, let game = games.first(where: { $0.id == gameID }), !urls.isEmpty else { return }
         var arguments = ["check-addons", game.folder]
         for url in urls where url.isFileURL { arguments += ["--source", url.path] }
         guard arguments.count > 2 else { addonError = "Drop local update or DLC files, or a folder containing them."; return }
         if let key = game.keys ?? keys { arguments += ["--keys", key] }
         checkingAddonGame = gameID
         Task {
-            defer { checkingAddonGame = nil }
+            defer { checkingAddonGame = nil; startNextBuild() }
             do {
                 let result = try await Backend.ask(GameAddonCheck.self, arguments)
                 guard let index = games.firstIndex(where: { $0.id == gameID }) else { return }
@@ -231,7 +262,7 @@ final class Library: ObservableObject {
     }
 
     func removeAddon(_ addon: GameAddon, from gameID: Game.ID) {
-        guard !isBusy, let index = games.firstIndex(where: { $0.id == gameID }) else { return }
+        guard canEditAddons, let index = games.firstIndex(where: { $0.id == gameID }) else { return }
         // A merged package can contain multiple DLC entries. Remove its file as a unit.
         games[index].addons?.removeAll { $0.path == addon.path }
         save()
@@ -291,7 +322,7 @@ final class Library: ObservableObject {
     }
 
     func setArtwork(_ url: URL?) {
-        update { $0.artwork = url?.path; $0.artworkCrop = nil }
+        update { $0.artwork = url?.path; $0.artworkCrop = ArtworkCrop() }
         schedulePreview()
         if url == nil, let game = current {
             let titleID = info?.artwork_title_id ?? info?.title_id ?? game.titleID
@@ -394,7 +425,8 @@ final class Library: ObservableObject {
               setupMissing.isEmpty, !install || device != nil,
               buildQueue.active?.gameID != game.id, buildQueue.position(game.id) == nil else { return }
         var arguments = [game.folder, "--mode", game.mode.rawValue, "--texture-cap", String(game.texture.rawValue)]
-        if game.swapABXY == true { arguments.append("--swap-ab-xy") }
+        if game.swapsAB { arguments.append("--swap-ab") }
+        if game.swapsXY { arguments.append("--swap-xy") }
         if game.showFPS { arguments.append("--fps") }
         if let scale = game.renderScale, scale < 1, info.render_scale == true { arguments += ["--render-scale", String(scale)] }
         if game.coolWhenHot == false, info.frame_step == true { arguments.append("--no-thermal-cap") }
@@ -422,7 +454,7 @@ final class Library: ObservableObject {
     }
 
     private func startNextBuild() {
-        guard !automaticallyBackingUp, !settingUp, !transferringSaves else { return }
+        guard !automaticallyBackingUp, !settingUp, !transferringSaves, checkingAddonGame == nil else { return }
         guard let request = buildQueue.next() else { return }
         runGameID = request.gameID
         completedBuilds.removeValue(forKey: request.gameID)
@@ -525,7 +557,7 @@ final class Library: ObservableObject {
     private func backUpRound() async -> Double {
         if devices.isEmpty { await refreshDevices() }
         let folders = games.map(\.folder)
-        guard let device else { return Self.retryInterval }
+        guard let device else { return Self.backupInterval }
         guard !isBusy else { return Self.backupInterval }   // builds and imports manage their own backups
         automaticallyBackingUp = true
         automaticBackupNotice = nil
@@ -536,7 +568,7 @@ final class Library: ObservableObject {
         let arguments = ["autobackup", "--device", device] + folders.flatMap { ["--folder", $0] } + (icloudBackups ? ["--icloud"] : [])
         guard let round = try? await Backend.ask(BackupRound.self, arguments) else {
             automaticBackupNotice = "Automatic backup could not finish. TVPort will try again automatically."
-            return Self.retryInterval
+            return Self.backupInterval
         }
         if round.state == "unreachable" {
             automaticBackupNotice = "Apple TV unavailable. Automatic backup will try again; saved copies are still available."
@@ -548,7 +580,7 @@ final class Library: ObservableObject {
             status.checked = status.checked ?? backups[folder]?.checked   // a round that could not ask keeps the last time the copy matched the TV
             backups[folder] = status
         }
-        return ["unreachable", "partial", "building"].contains(round.state) ? Self.retryInterval : Self.backupInterval
+        return Self.backupInterval
     }
 
     /// When the Mac's copy of a game's saves last matched the TV, or when its newest backup was made.

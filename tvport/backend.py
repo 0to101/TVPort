@@ -281,13 +281,18 @@ class Game:
 
     def profile_value(self, key: str) -> str:
         """A key of the game's profile: the derived one the NSP script wrote for a version it was not brought up on, else the repository's (dm/games/<title ID>/game.tsv)"""
-        for tsv in ((self.build / 'profile' / self.title_id / 'game.tsv') if self.build else None, REPO / 'dm/games' / self.title_id / 'game.tsv'):
+        for tsv in ((self.profile_root / self.title_id / 'game.tsv') if self.build else None, REPO / 'dm/games' / self.title_id / 'game.tsv'):
             if tsv and tsv.is_file():
                 for line in tsv.read_text(errors='replace').splitlines():
                     fields = line.split('\t')
                     if len(fields) >= 2 and fields[0] == key:
                         return fields[1].strip()
         return ''
+
+    @property
+    def profile_root(self) -> Path:
+        # Relative to the build folder so moving a build keeps its active profile.
+        return self.build / self.state().get('profile_root', 'profile')
 
     def frame_step_supported(self) -> bool:
         """A frame step in the rewritten main (its state page, FPS_STATE_OFF): the host decides each frame's step and holds 30 fps while the device is thermally serious (hle_nvn.c thermal_capped)"""
@@ -738,7 +743,7 @@ def restore_saves(game: Game, device: str, bundle: str) -> int:
     return len(sources)
 
 
-def write_env(game: Game, mode: str, texture_cap: int, players: str = '', render_scale: float = 1.0, thermal_cap: bool = True, fps_target: int = 0, swap_ab_xy: bool = False) -> Path:
+def write_env(game: Game, mode: str, texture_cap: int, players: str = '', render_scale: float = 1.0, thermal_cap: bool = True, fps_target: int = 0, swap_ab_xy: bool = False, swap_ab: Optional[bool] = None, swap_xy: Optional[bool] = None) -> Path:
     """The switches the app reads at launch (main.m, dm/env.txt)."""
     path = game.build / 'tvport-env.txt'
     lines = ['# Written by TVPort', f'DM_OPMODE={0 if mode == "handheld" else 1}', f'DM_BC_MAX_DIM={texture_cap}']
@@ -748,8 +753,13 @@ def write_env(game: Game, mode: str, texture_cap: int, players: str = '', render
         lines.append(f'DM_FPS_TARGET={fps_target}')
     if not thermal_cap:   # the frame step keeps its cap when the TV is hot; tvOS lowers the clocks then all the same (docs/reference/frame-rate.md)
         lines.append('DM_THERMAL_CAP=0')
-    if swap_ab_xy:
+    if swap_ab_xy and swap_ab is None and swap_xy is None:  # Older callers still swap both pairs.
         lines.append('DM_PAD_SWAP_AB_XY=1')
+    else:
+        if swap_ab if swap_ab is not None else swap_ab_xy:
+            lines.append('DM_PAD_SWAP_AB=1')
+        if swap_xy if swap_xy is not None else swap_ab_xy:
+            lines.append('DM_PAD_SWAP_XY=1')
     if players.strip():
         lines.append('DM_TV_PLAYERS=' + ' '.join(players.split()))
     path.write_text('\n'.join(lines) + '\n')
@@ -758,7 +768,7 @@ def write_env(game: Game, mode: str, texture_cap: int, players: str = '', render
 
 def profile_env(game: Game) -> dict:
     env = dict(os.environ)
-    derived = game.build / 'profile'
+    derived = game.profile_root
     if (derived / game.title_id / 'game.tsv').is_file():
         env.update(DM_GAMES_DIR=str(derived), DM_GAMES_FIRST='1')
     return env
@@ -766,7 +776,7 @@ def profile_env(game: Game) -> dict:
 
 def restore_tables(game: Game) -> None:
     """c1_full.tsv and cb_extent.tsv are outputs of the shader build, kept in the profile, and a new checkout has none: take them from the game's last project."""
-    profile = game.build / 'profile' / game.title_id
+    profile = game.profile_root / game.title_id
     if not profile.is_dir():
         profile = REPO / 'dm/games' / game.title_id
     for name in ('c1_full.tsv', 'cb_extent.tsv'):
@@ -777,13 +787,26 @@ def restore_tables(game: Game) -> None:
 
 def prepare_game(game: Game, keys: Optional[Path], team: str, python: str) -> Game:
     stage('Extracting the game, rewriting its code and building shaders')
-    emit('log', line='This is the long step: 30 to 60 minutes the first time, and once per game.')
+    emit('log', line='This can take 30 to 60 minutes the first time, and again when the game version changes.')
     keys = keys if keys and keys.is_file() else find_keys(game)
     if not keys:
         raise Failure('This game has not been built yet, so it needs your prod.keys file')
+    signature = game.input_signature()
+    state = game.state()
+    profiles = dict(state.get('profiles_by_source') or {})
+    previous_signature = state.get('source_signature')
+    if previous_signature:
+        profiles.setdefault(previous_signature, state.get('profile_root', 'profile'))
+    # A provisional survey contains build-specific addresses and memory settings.
+    # Different inputs must not reuse it; keep each survey so switching back is safe.
+    profile = profiles.get(signature, f'profiles/{signature}') if game.build else None
     command = [python, REPO / 'scripts/build_ipa_from_nsp.py', game.folder, '-k', keys, '--prepare-xcode', '--keep-extracted', '--gpu', 'none', '--romfs', 'separate', '--allow-other-metal', '--progress', 'lines']
     if game.title_id:
         command += ['--title-id', game.title_id]
+    if profile:
+        command += ['--profile-out', game.build_parent / game.build.name / profile]
+        if signature not in profiles:
+            emit('log', line='Game files changed: creating a separate game profile. Earlier profiles are kept.')
     for path in dict.fromkeys(item['path'] for item in game.addons):
         command += ['--extra-package', path]
     if game.build_parent != game.folder:
@@ -794,7 +817,9 @@ def prepare_game(game: Game, keys: Optional[Path], team: str, python: str) -> Ga
     game = Game(game.folder)
     if not game.prepared:
         raise Failure('The engine finished without shaders or game files for this game. See the log above.')
-    game.save_state(source_signature=game.input_signature())
+    profile = profile or 'profile'
+    profiles[signature] = profile
+    game.save_state(source_signature=signature, profile_root=profile, profiles_by_source=profiles)
     return game
 
 
@@ -804,7 +829,7 @@ def generate_project(game: Game, args, team: str, bundle: str, python: str) -> P
     env = profile_env(game)
     aoc = game.build / 'aoc'
     env.update(GAME=game.title_id, W=str(game.build), PATCHED=str(game.build / f'patched_{game.package}'), ROMFS=str(game.romfs), MSL_IOS=str(game.shaders), AOC=str(aoc) if aoc.is_dir() and game.prepared_content().get('dlc', True) else '',
-               DM_TVOS='1', DM_COPY_ROMFS='NO', DM_SHOW_FPS='1' if args.fps else '0', DM_ENV_FILE=str(write_env(game, args.mode, args.texture_cap, args.players, args.render_scale, not args.no_thermal_cap, args.fps_target, args.swap_ab_xy)), DM_BUNDLE_ID=bundle, DM_TEAM_ID=team,
+               DM_TVOS='1', DM_COPY_ROMFS='NO', DM_SHOW_FPS='1' if args.fps else '0', DM_ENV_FILE=str(write_env(game, args.mode, args.texture_cap, args.players, args.render_scale, not args.no_thermal_cap, args.fps_target, args.swap_ab_xy, args.swap_ab, args.swap_xy)), DM_BUNDLE_ID=bundle, DM_TEAM_ID=team,
                DM_XCODE_PROJECT_DIR=str(game.build / 'tvport-xcode'), DM_XCODE_DERIVED_DATA=str(game.build / 'tvport-derived'), FONT_PY=python)
     env.update(artwork_env(args))
     art = args.art or game.icon or args.shelf_art
@@ -1110,7 +1135,7 @@ def cmd_diagnose(args) -> None:
             pass
         log = (folder / 'log.txt').read_text(errors='replace')
         run_log, kills = read_log(log), read_jetsam(folder / 'reports')
-        print(json.dumps({'run': run_log, 'kills': kills[-5:], 'verdicts': verdicts(run_log, kills[-1:]), 'log': log[-20000:]}))
+        print(json.dumps({'run': run_log, 'kills': kills[-5:], 'verdicts': verdicts(run_log, kills[-1:]), 'log': log}))
 
 
 def cmd_save_import(args) -> None:
@@ -1211,6 +1236,8 @@ def main() -> int:
     build.add_argument('--no-thermal-cap', action='store_true')
     build.add_argument('--fps-target', type=int, choices=(0, 30, 60), default=0)   # 0: the profile's
     build.add_argument('--swap-ab-xy', action='store_true')
+    build.add_argument('--swap-ab', action='store_true', default=None)
+    build.add_argument('--swap-xy', action='store_true', default=None)
     build.add_argument('--fps', action='store_true')
     build.add_argument('--players', default='')
     build.add_argument('--icloud', action='store_true')

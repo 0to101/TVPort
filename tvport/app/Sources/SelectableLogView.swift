@@ -20,6 +20,7 @@ struct SelectableLogView: NSViewRepresentable {
 
 final class LogTextScrollView: NSScrollView {
     let logTextView = NSTextView()
+    private var scrollToEndOnLayout = false
     private var logColor = NSColor.black
     private let logFont = NSFont.monospacedSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular)
     private var logAttributes: [NSAttributedString.Key: Any] {
@@ -56,6 +57,18 @@ final class LogTextScrollView: NSScrollView {
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 
+    override func layout() {
+        super.layout()
+        // SwiftUI can supply text before the view has its final size. Scroll only
+        // after layout so the first display and later appends reach the real end.
+        guard scrollToEndOnLayout, contentSize.height > 0, contentSize.width > 0 else { return }
+        scrollToEndOnLayout = false
+        if let container = logTextView.textContainer {
+            logTextView.layoutManager?.ensureLayout(for: container)
+        }
+        logTextView.scrollRangeToVisible(NSRange(location: (logTextView.string as NSString).length, length: 0))
+    }
+
     func setDarkAppearance(_ dark: Bool) {
         let color: NSColor = dark ? .white : .black
         guard color != logColor else { return }
@@ -70,11 +83,7 @@ final class LogTextScrollView: NSScrollView {
         let oldText = logTextView.string
         guard text != oldText else { return }
         let selection = logTextView.selectedRange()
-        let visibleOrigin = contentView.bounds.origin
-        let followsTail = oldText.isEmpty || (selection.length == 0
-            && contentView.bounds.maxY >= logTextView.bounds.maxY - 2)
-
-        // Append without resetting an in-progress selection or the scroll position.
+        // Preserve selection for Select All/Copy while following every update.
         let oldLength = (oldText as NSString).length
         let newLength = (text as NSString).length
         if text.hasPrefix(oldText) {
@@ -85,12 +94,7 @@ final class LogTextScrollView: NSScrollView {
         }
         let start = min(selection.location, newLength)
         logTextView.setSelectedRange(NSRange(location: start, length: min(selection.length, newLength - start)))
-        logTextView.layoutManager?.ensureLayout(for: logTextView.textContainer!)
-        if followsTail {
-            logTextView.scrollRangeToVisible(NSRange(location: newLength, length: 0))
-        } else {
-            contentView.scroll(to: visibleOrigin)
-            reflectScrolledClipView(contentView)
-        }
+        scrollToEndOnLayout = true
+        needsLayout = true
     }
 }

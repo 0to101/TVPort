@@ -467,6 +467,19 @@ class Saves(unittest.TestCase):
             self.assertIn('DM_PAD_SWAP_AB_XY=1\n', backend.write_env(game, 'handheld', 512, swap_ab_xy=True).read_text())
             self.assertNotIn('DM_PAD_SWAP_AB_XY', backend.write_env(game, 'handheld', 512, swap_ab_xy=False).read_text())
 
+    def test_independent_button_swaps(self):
+        with tempfile.TemporaryDirectory() as folder:
+            game = self.make_game(folder)
+            for ab in (False, True):
+                for xy in (False, True):
+                    env = backend.write_env(game, 'handheld', 512, swap_ab=ab, swap_xy=xy).read_text()
+                    self.assertEqual('DM_PAD_SWAP_AB=1\n' in env, ab)
+                    self.assertEqual('DM_PAD_SWAP_XY=1\n' in env, xy)
+                    self.assertNotIn('DM_PAD_SWAP_AB_XY', env)
+            env = backend.write_env(game, 'handheld', 512, swap_ab_xy=True, swap_ab=False).read_text()
+            self.assertNotIn('DM_PAD_SWAP_AB=', env)
+            self.assertIn('DM_PAD_SWAP_XY=1', env)
+
     def test_thermal_cap_can_be_left_off(self):
         with tempfile.TemporaryDirectory() as folder:
             game = self.make_game(folder)
@@ -543,6 +556,17 @@ if __name__ == '__main__':
 
 class DiagnoseCommand(unittest.TestCase):
     args = SimpleNamespace(device='test-tv', bundle='test.game')
+
+    def test_complete_log_preserves_crash_before_long_thread_dump(self):
+        log = '[dm] boot\n[dm] CRASH sig=11 addr=0x4\n' + ('waiting thread — details\n' * 3000)
+        def copy(argv, **kwargs):
+            if 'systemCrashLogs' not in argv:
+                Path(argv[-1]).write_text(log, encoding='utf-8')
+            return subprocess.CompletedProcess([], 0)
+        output = io.StringIO()
+        with patch.object(backend, 'run', side_effect=copy), redirect_stdout(output):
+            backend.cmd_diagnose(self.args)
+        self.assertEqual(json.loads(output.getvalue())['log'], log)
 
     def test_unreachable_tv_has_actionable_error(self):
         with patch.object(backend, 'run', side_effect=subprocess.TimeoutExpired('devicectl', 30)):

@@ -5,7 +5,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import patch, PropertyMock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import backend
@@ -41,6 +41,58 @@ class AddonMetadata(unittest.TestCase):
 
 
 class BuildAttachments(unittest.TestCase):
+    def test_changed_inputs_get_separate_profiles_and_can_switch_back(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder).resolve()
+            source = root / 'base'; source.mkdir()
+            data = root / 'settings'; data.mkdir()
+            build = source / f'{APP:016X}_build'; build.mkdir()
+            (source / 'base.nsp').write_bytes(b'base')
+            keys = root / 'test.keys'; keys.touch()
+            legacy = build / 'profile' / f'{APP:016X}'
+            legacy.mkdir(parents=True)
+            (legacy / 'game.tsv').write_text('name\tBase game\n')
+            with patch.object(backend, 'DATA', data), patch.dict(backend.os.environ, {'TVPORT_DEFAULT_BUILD_FOLDER': ''}), patch.object(backend.Game, 'prepared', new_callable=PropertyMock, return_value=True), patch.object(backend, 'emit'):
+                game = backend.Game(source)
+                base_signature = game.input_signature()
+                game.save_state(source_signature=base_signature)
+                update = root / 'update.nsp'; update.write_bytes(b'update')
+                (data / 'library.json').write_text(json.dumps([{'folder': str(source), 'addons': [{'path': str(update)}]}]))
+                game = backend.Game(source)
+                update_signature = game.input_signature()
+                expected = build / 'profiles' / update_signature
+
+                def prepare(command, **kwargs):
+                    chosen = Path(command[command.index('--profile-out') + 1])
+                    self.assertEqual(chosen, expected)
+                    target = chosen / game.title_id
+                    target.mkdir(parents=True, exist_ok=True)
+                    (target / 'game.tsv').write_text('name\tUpdated game\n')
+
+                with patch.object(backend, 'stream', side_effect=prepare):
+                    updated = backend.prepare_game(game, keys, '', sys.executable)
+                self.assertEqual(updated.profile_root, expected)
+                self.assertEqual(updated.profile_value('name'), 'Updated game')
+                self.assertEqual(backend.profile_env(updated)['DM_GAMES_DIR'], str(expected))
+                self.assertEqual((legacy / 'game.tsv').read_text(), 'name\tBase game\n')
+
+                # A failed preparation must not change the last successful profile.
+                state = updated.state()
+                update.write_bytes(b'different update')
+                with patch.object(backend, 'stream', side_effect=backend.Failure('test failure')):
+                    with self.assertRaises(backend.Failure):
+                        backend.prepare_game(backend.Game(source), keys, '', sys.executable)
+                self.assertEqual(backend.Game(source).state(), state)
+
+                # Removing the update selects the preserved original survey again.
+                (data / 'library.json').write_text('[]')
+                with patch.object(backend, 'stream') as stream:
+                    original = backend.prepare_game(backend.Game(source), keys, '', sys.executable)
+                command = stream.call_args.args[0]
+                self.assertEqual(Path(command[command.index('--profile-out') + 1]), build / 'profile')
+                self.assertEqual(original.profile_value('name'), 'Base game')
+                self.assertEqual(original.state()['source_signature'], base_signature)
+
     def test_signature_removal_manifest_and_packaging(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder).resolve()
@@ -64,7 +116,7 @@ class BuildAttachments(unittest.TestCase):
                 manifest.write_text(json.dumps({'package': 'v0', 'dlc': False}))
                 self.assertEqual(game.package, 'v0')  # Removed update must not be reused.
                 (build / 'aoc').mkdir()  # Old DLC remains cached after detaching.
-                args = argparse.Namespace(fps=False, mode='handheld', texture_cap=512, players='', render_scale=1, no_thermal_cap=False, fps_target=0, swap_ab_xy=False, art=None, art_scale=0, art_x=0, art_y=0, shelf_art=root / 'cover.png', shelf_scale=2, shelf_x=-1, shelf_y=1)
+                args = argparse.Namespace(fps=False, mode='handheld', texture_cap=512, players='', render_scale=1, no_thermal_cap=False, fps_target=0, swap_ab_xy=False, swap_ab=None, swap_xy=None, art=None, art_scale=0, art_x=0, art_y=0, shelf_art=root / 'cover.png', shelf_scale=2, shelf_x=-1, shelf_y=1)
                 with patch.object(backend, 'restore_tables'), patch.object(backend, 'write_env', return_value=root / 'env'), patch.object(backend, 'stream') as stream:
                     for active in (False, True):
                         manifest.write_text(json.dumps({'package': 'v0', 'dlc': active}))

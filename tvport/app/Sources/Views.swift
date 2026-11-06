@@ -425,6 +425,7 @@ struct ArtworkCard: View {
             .dropDestination(for: URL.self) { urls, _ in
                 guard let url = urls.first, url.isFileURL else { return false }
                 if ["nsp", "xci", "nsz", "xcz"].contains(url.pathExtension.lowercased()) || url.hasDirectoryPath {
+                    guard library.canEditAddons else { return false }
                     if let game = library.current { library.attachAddons(urls, to: game.id) }
                     return true
                 }
@@ -500,13 +501,14 @@ struct SettingsForm: View {
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
             Section("Controller") {
-                Toggle("Swap A/B and X/Y", isOn: swapButtonsBinding)
-                Text("Swaps A with B and X with Y on connected controllers for this game. Takes effect at the next Build & Install.")
+                Toggle("Swap A/B", isOn: swapABBinding)
+                Toggle("Swap X/Y", isOn: swapXYBinding)
+                Text("Swap each pair independently for this game. Your choices become the default for new games. Takes effect at the next Build & Install.")
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
             Section("Saves") {
                 Button("Manage Saves…") { openWindow(id: "manage-saves") }
-                Text("While TVPort is open, it backs up all supported installed games’ saves from the Apple TV every 5 minutes, only reading the TV. Enable iCloud backups in Manage Saves to keep new backups in iCloud Drive, in TVPort Saves.")
+                Text("While TVPort is open, it backs up all supported installed games’ saves from the Apple TV every 30 minutes, only reading the TV. Enable iCloud backups in Manage Saves to keep new backups in iCloud Drive, in TVPort Saves.")
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 TextField("Players", text: playersBinding, prompt: Text("Names, separated by commas"))
                 Text("With two or more names, the Apple TV asks who's playing, and each person gets their own saves. The first name picked keeps the saves already on the TV. Takes effect at the next Build & Install.")
@@ -515,17 +517,15 @@ struct SettingsForm: View {
                     LabeledContent("Last backup", value: "\(time), \(place(game))")
                 }
             }
-            if library.info?.prepared == false {
-                Section("First Build") {
-                    LabeledContent("prod.keys") {
-                        HStack {
-                            Text(library.keys.map { URL(fileURLWithPath: $0).deletingLastPathComponent().lastPathComponent + "/prod.keys" } ?? "Not found").foregroundStyle(.secondary)
-                            Button("Choose…") { choosingKeys = true }
-                        }
+            Section("Game keys") {
+                LabeledContent("prod.keys") {
+                    HStack {
+                        Text(library.keys.map { URL(fileURLWithPath: $0).deletingLastPathComponent().lastPathComponent + "/prod.keys" } ?? "Not found").foregroundStyle(.secondary)
+                        Button("Choose…") { choosingKeys = true }
                     }
-                    Text("The keys of your own Switch. The first build reads them to decrypt the game, and TVPort never copies them or puts them in what it builds.")
-                        .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 }
+                Text("Select the keys from your own Switch for games, updates and DLC. TVPort reads this file where it is and never includes it in the built app.")
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
         }
         .formStyle(.grouped).scrollDisabled(true)
@@ -561,8 +561,12 @@ struct SettingsForm: View {
         })
     }
 
-    private var swapButtonsBinding: Binding<Bool> {
-        Binding(get: { library.current?.swapABXY ?? false }, set: { value in library.update { $0.swapABXY = value } })
+    private var swapABBinding: Binding<Bool> {
+        Binding(get: { library.current?.swapsAB ?? false }, set: { library.setButtonSwap(ab: $0) })
+    }
+
+    private var swapXYBinding: Binding<Bool> {
+        Binding(get: { library.current?.swapsXY ?? false }, set: { library.setButtonSwap(xy: $0) })
     }
 
     private var coolBinding: Binding<Bool> {
@@ -619,6 +623,10 @@ struct LastRunStatsView: View {
             HStack {
                 if !library.readingDiagnosis {
                     Button("Refresh") { library.diagnose() }
+                    if let diagnosis = library.diagnosis, library.diagnosisError == nil {
+                        LogExportButton(text: diagnosis.log,
+                                        filename: "\(library.info?.name ?? "Game") - Last Run.txt")
+                    }
                 }
                 Spacer()
                 Button("Close") { dismiss() }.keyboardShortcut(.cancelAction)
@@ -674,6 +682,10 @@ struct ProgressPanel: View {
                     Button(showLog ? "Hide Log" : "Show Log") { showLog.toggle() }.buttonStyle(.link)
                 }
                 Spacer()
+                if !library.selectedLog.isEmpty {
+                    LogExportButton(text: library.selectedLog.joined(separator: "\n"),
+                                    filename: "\(library.current?.name ?? "Game") - Build Log.txt")
+                }
             }
             if library.selectedRun == .running, let progress = library.selectedProgress { ProgressView(value: progress) }
             if case .failed(let message) = library.selectedRun {

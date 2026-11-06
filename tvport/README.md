@@ -36,6 +36,8 @@ Add a folder holding your game's `.nsp` or `.xci` files, pick your Apple TV, and
 
 **Choose Artwork** takes any image and overrides automatic artwork. **Use Automatic Artwork** switches back to the eShop image or game icon. **Framing > Crop to fill** adds 100–300% zoom and horizontal/vertical crop position controls. Drag the preview to reposition it directly; previews are cached while switching games. **Reset Crop** returns to a centered crop, and **Automatic** restores the original framing. Choices are saved per game and applied to the preview and generated Apple TV assets at the next Build & Install. Choosing a different image resets the framing. The preview is drawn by the same code as the real icon (`dm/ios/tools/tv_icon.swift`), which also makes the Top Shelf banners.
 
+**Controller:** **Swap A/B** and **Swap X/Y** are independent choices for each game. Games using the older combined swap keep both enabled. The most recently chosen pair of settings is saved as the default for newly added games; existing games keep their choices. Apply changes to the Apple TV game with the next Build & Install.
+
 **Last Run Stats** opens a panel immediately, then reads the game's log and the system's memory reports from the Apple TV. It shows performance readings, explanations and a selectable run log. If the TV cannot be reached or there are no readings yet, the panel explains what to do and offers Refresh.
 
 **3D resolution** appears for a game whose rewritten code has a render-scale stub, the same test the iPhone launcher uses (`# RENDER_SCALE` in the main's fixups; `backend.py` `render_scale_supported`). That is Tears of the Kingdom 1.4.2 and 1.4.3, and Breath of the Wild 1.9.0. Below Full, the build writes `DM_RENDER_SCALE` into the app's `dm/env.txt`, so the game draws its 3D scene at that fraction of its size. The size is then fixed in place of the game's own dynamic resolution, and the menus stay sharp. It takes effect at the next Build & Install. On the A15, Tears of the Kingdom at 75% went from 15 to 30 fps in the area after the opening movie, with the GPU at about 28 ms a frame.
@@ -49,6 +51,8 @@ Add a folder holding your game's `.nsp` or `.xci` files, pick your Apple TV, and
 **Top Shelf Cover** accepts PNG or JPEG images. The drop area previews the central 8:3 composition (recommended source size 1920 × 720 pixels) with independent framing, zoom and horizontal/vertical position controls. Automatic framing preserves the whole image over a blurred background. The 2320 × 720 wide asset adds 200 pixels of background on each side, keeping important artwork out of those outer edges. It uses the game artwork by default; **Use Game Artwork** removes the custom cover. The generated app includes standard and wide Top Shelf sizes. Changes apply at the next Build & Install. New games and newly chosen covers default to Crop to fill; existing framing choices are kept.
 
 ### Updates and DLC from other folders
+
+**Updates & DLC support is under development and may cause games to crash.** A successful build or package check does not guarantee that the updated game will run.
 
 Drop NSP, XCI, NSZ or XCZ updates/DLC onto a game in the sidebar or its game page, or use **Updates & DLC → Add Files**. TVPort reads package metadata with your keys and rejects packages for another game or region. Original files stay where they are; reconnect external drives before building. Removing an attachment keeps the original file. Build & Install applies attached content and removes detached content from the next app build. The engine selects the newest available update/DLC version. Content already in the original game folder is still discovered there.
 
@@ -145,7 +149,7 @@ tvOS has no lasting storage for files: on tvOS 27.2, `Documents` refuses writes 
 |---|---|---|
 | Working | `Library/Caches/save` on the TV | Until tvOS purges it |
 | Protected | The app's preferences, seconds after each save (`dm/ios/SourcesTV/TVSaves.m`) | A cache purge, a reinstall. Not deleting the app |
-| Backup | Managed save copies on this Mac or in iCloud Drive’s `TVPort Saves`, plus existing build-folder backups. Checked every 5 minutes while TVPort is open | Anything that happens to the TV |
+| Backup | Managed save copies on this Mac or in iCloud Drive’s `TVPort Saves`, plus existing build-folder backups. Checked every 30 minutes while TVPort is open | Anything that happens to the TV |
 
 The protected copy comes back by itself when the save folder is empty. Build & Install backs up first, and puts the newest backup on a TV that has lost its saves. Automatic recovery checks both working saves and persistent copies before writing; if either exists, or their absence cannot be verified, recovery is skipped. For manual backups, open **Manage Saves** and choose **Back Up to Mac** or **Back Up All Saves**.
 
@@ -168,7 +172,7 @@ Local imports and manual backups are kept until you remove them yourself and are
 
 ### Automatic backups
 
-While TVPort is open, it checks saves for all supported games installed on the selected Apple TV every five minutes, including games built on another Mac or whose local build folders are unavailable. It only reads the TV and never launches or closes a game. Rounds wait while a build or save transfer is active. An unavailable TV is retried later; an inaccessible game does not stop the remaining games from being checked.
+While TVPort is open, it checks saves for all supported games installed on the selected Apple TV every 30 minutes, including games built on another Mac or whose local build folders are unavailable. It only reads the TV and never launches or closes a game. Rounds wait while a build or save transfer is active. An unavailable TV is retried at the next 30-minute check; an inaccessible game does not stop the remaining games from being checked.
 
 - **Changed saves only:** TVPort compares verified file contents with the newest saved backup for that player/slot. Identical copies do not create another backup. Checking still requires transferring the save data.
 - **Consistent copies:** after copying, it checks the file listing again. If a game saved during the copy, that incomplete backup is discarded and a later round tries again.

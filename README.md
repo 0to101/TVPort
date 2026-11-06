@@ -2,6 +2,20 @@
 
 <img src="docs/images/tvport/app-icon.png" alt="TVPort app icon" width="128" height="128">
 
+## What’s new in TVPort 1.2.3 build 44
+
+- Added separate Swap A/B and Swap X/Y controls. Existing combined swaps stay enabled, and new games inherit your most recent choices.
+- Reduced automatic save checks to every 30 minutes. Backups are still created only when saves change, keeping the newest 10 automatic copies per game and player/save slot.
+- Kept Updates & DLC attachments editable during automatic save checks and fixed the Add Files dialog.
+- Kept separate generated game profiles when input files change, fixing the cached base-game profile error when adding an update. Previous profiles are preserved for switching back.
+- Made Last Run show the complete available run log, added text-file export for build and run logs, and made the build log follow new output. Save Log now sits beside the status and Show/Hide Log controls.
+- Kept the prod.keys picker visible in game settings.
+- Made Crop to fill the default for new App Icons and when choosing replacement artwork. Top Shelf uses the App Icon image unless a separate cover is selected, with a clearer Use App Icon Image action.
+- Added an in-app warning that Updates & DLC support is under development and may cause games to crash.
+
+Known issue: Snufkin reached gameplay with the newer engine without the game update, but the updated game still crashes during loading. The latest updated-game log repeats the same null-pointer fault as earlier tests. The cause remains under investigation; DLC has not been isolated as the cause. This is not a confirmed crash fix.
+
+
 ## What’s new in TVPort 1.2.3
 
 - Added a build queue: prepare several games, see Building and numbered Queued badges, and remove waiting games. Stop or a failed build pauses the queue until you resume it.
@@ -29,7 +43,7 @@ See the [1.2.3 changelog](tvport/CHANGELOG-1.2.3.md) for validation and release 
 
 Existing features and instructions remain below.
 
-Download [TVPort 1.2.3](https://github.com/0to101/TVPort/releases/tag/v1.2.3). See [the TVPort guide](tvport/README.md) for setup and build instructions.
+Download [TVPort 1.2.3 build 44](https://github.com/0to101/TVPort/releases/tag/v1.2.3-build44). Earlier downloads remain available in the release history. See [the TVPort guide](tvport/README.md) for setup and build instructions.
 
 ## Features retained from TVPort 1.1
 
@@ -61,7 +75,7 @@ These screenshots use fictional games, dummy artwork and sample save records.
 ## What TVPort adds
 
 - **An Apple TV build** (tvOS 26 or later; tested on an Apple TV 4K, 3rd generation, A15, tvOS 27.2). The game's memory is backed by a file, which keeps large games under tvOS's 2 GB limit per app ([tvport/README.md](tvport/README.md#getting-past-the-memory-limit)). The A15 has no BC texture formats, so those textures are stored decompressed.
-- **Saves that last.** tvOS can clear an app's caches at any time. Each save is copied to the app's preferences a few seconds after the game saves it, and comes back by itself. The Mac keeps backups too, every 5 minutes while TVPort is open, in iCloud Drive if you like.
+- **Saves that last.** tvOS can clear an app's caches at any time. Each save is copied to the app's preferences a few seconds after the game saves it, and comes back by itself. The Mac checks saves every 30 minutes while TVPort is open and backs them up only when they change, in iCloud Drive if you like.
 - **"Who's playing?"** Each player on a shared TV gets their own saves. For a game with one save per console, such as Animal Crossing: New Horizons' island, each name is a resident of the same island instead.
 - **The TVPort Mac app.** Pick a folder holding your game's NSP or XCI files and your `prod.keys`, pick your Apple TV, and press **Build & Install**. Settings for render mode, texture detail, 3D resolution, frame rate and heat appear when the game supports them. **Last Run** reads the TV's log and memory reports and says what went wrong in plain words.
 - **Engine fixes found on the TV**, which help every game:

@@ -88,7 +88,7 @@ struct SaveManagerView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text("Manage Saves").font(.title2.weight(.semibold))
-            Text("Browse backups offline. Automatic backups are created only when saves change, keeping the newest 10 per game and player.")
+            Text("Automatic save checks run every 30 minutes while TVPort is open. Only changed saves are backed up; the newest 10 per game and player are kept. You can browse backups offline.")
                 .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             HStack {
                 Picker("Apple TV", selection: $device) {

@@ -52,11 +52,11 @@ struct TopShelfArtworkCard: View {
             HStack {
                 Button("Choose Cover…") { choosing = true }
                 if library.current?.topShelfArtwork != nil {
-                    Button("Use Game Artwork") { library.setTopShelfArtwork(nil) }
+                    Button("Use App Icon Image") { library.setTopShelfArtwork(nil) }
                 }
             }
             ArtworkFramingControls(topShelf: true)
-            Text("Preview shows the central cover area. Extra side background is added for tvOS. Automatic keeps the whole image; Crop to fill lets you zoom and move it. Applies on next Build & Install.")
+            Text("Uses the App Icon image unless you choose a separate cover. Preview shows the central area; extra side background is added for tvOS. Applies on next Build & Install.")
                 .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         }
         .fileImporter(isPresented: $choosing, allowedContentTypes: [.png, .jpeg]) { result in
