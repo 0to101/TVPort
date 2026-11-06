@@ -71,14 +71,41 @@ struct ContentView: View {
                     VStack(alignment: .leading, spacing: 6) {
                         GameArtworkThumbnail(titleID: game.titleID, name: game.name,
                                              artworkPath: game.artwork ?? (game.id == library.selection ? library.artworkPath : nil))
+                            .overlay(alignment: .topLeading) {
+                                if let badge = library.buildBadge(for: game.id) {
+                                    Text(badge).font(.caption.weight(.semibold))
+                                        .padding(.horizontal, 8).padding(.vertical, 4)
+                                        .background(.regularMaterial, in: Capsule()).padding(6)
+                                }
+                            }
                         Text(game.name).lineLimit(1)
-                        Text(game.built == true ? "Built" : "Ready to build").font(.callout).foregroundStyle(.secondary)
+                        if game.built == true {
+                            Text("Built").font(.callout).foregroundStyle(.secondary)
+                        }
                         if let time = library.backedUp(game) { Text("Saves backed up \(time)").font(.caption).foregroundStyle(.secondary) }
                     }
                     .modifier(GameSelectionStyle(selected: library.selection == game.id))
                     .tag(game.id)
-                    .contextMenu { Button("Remove from List") { library.remove(game) } }
+                    .contextMenu {
+                        if library.buildQueue.position(game.id) != nil {
+                            Button("Remove from Queue") { library.removeQueuedBuild(game.id) }
+                        }
+                        Button("Remove from List") { library.remove(game) }
+                            .disabled(library.buildQueue.active?.gameID == game.id)
+                    }
                     .modifier(GameAddonDropTarget(gameID: game.id))
+                }
+                if library.queuedBuildCount > 0 {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(library.buildQueueSummary)
+                            .font(.callout.weight(.medium))
+                        Text(library.automaticallyBackingUp ? "Waiting for automatic backup to finish." : "Keep TVPort open. Queued games build one at a time.")
+                            .font(.caption).foregroundStyle(.secondary)
+                        if library.buildQueue.paused {
+                            Button("Resume Queue") { library.resumeBuildQueue() }
+                                .disabled(library.buildQueue.active != nil)
+                        }
+                    }.frame(maxWidth: .infinity, alignment: .leading).padding(12)
                 }
             }
             .frame(width: 240)
@@ -93,7 +120,6 @@ struct ContentView: View {
                         .offset(x: -3)
                 }
                     .help("Import, export and restore saves for games installed on an Apple TV")
-                    .disabled(library.isBusy)
                 SetupStatusButton()
             }
         } detail: {
@@ -101,6 +127,7 @@ struct ContentView: View {
             if library.current == nil {
                 VStack(spacing: 0) {
                     SetupBanner().padding(20)
+                    AutomaticBackupStatus().padding(.horizontal, 20)
                     ContentUnavailableView {
                         Label("No games yet", systemImage: "appletv")
                     } description: {
@@ -181,6 +208,7 @@ struct GameView: View {
                 VStack(alignment: .leading, spacing: 20) {
                     Header()
                     SetupBanner()
+                    AutomaticBackupStatus()
                     if let notice = library.notice { NoticeBar(text: notice) }
                     if let info = library.info, !info.prepared, info.sources.isEmpty {
                         NoticeBar(text: "This folder has no .nsp, .xci, .nsz or .xcz files. TVPort builds only from games you dumped from your own Switch.")
@@ -199,7 +227,7 @@ struct GameView: View {
                 .padding(.bottom, 20)
                 .padding(.top, 6)
             }
-            if library.run != .idle || !library.stage.isEmpty || !library.log.isEmpty {
+            if library.showsRunForSelection {
                 Divider()
                 ProgressPanel()
             }
@@ -226,10 +254,16 @@ struct GameView: View {
             ToolbarActionButton(title: "Last Run Stats", enabled: canUseInstalledGame && !library.readingDiagnosis,
                                 help: "Read memory and frame times from the Apple TV") { library.diagnose() }
             ToolbarActionButton(title: "Open on TV", enabled: canUseInstalledGame) { library.launch() }
-            if library.isBusy {
-                ToolbarActionButton(title: "Stop") { library.cancel() }
+            if library.buildQueue.active?.gameID == library.selection && library.buildQueue.active != nil {
+                ToolbarActionButton(title: "Stop", enabled: !library.buildQueue.paused) { library.cancel() }
+            } else if let gameID = library.selection, library.buildQueue.position(gameID) != nil {
+                ToolbarActionButton(title: "Remove from Queue") { library.removeQueuedBuild(gameID) }
             } else {
-                ToolbarActionButton(title: "Build & Install", enabled: canBuild, primary: true) { library.build(install: true) }
+                ToolbarActionButton(title: library.automaticallyBackingUp || library.buildQueue.active != nil || !library.buildQueue.pending.isEmpty ? "Add to Queue" : "Build & Install",
+                                    enabled: canBuild, primary: true,
+                                    help: "Uses the device and build options selected when added. Remove and re-add to change a queued build.") {
+                    library.build(install: true)
+                }
             }
         }
         // Add to the toolbar's 8-point inset to match the content's 20-point margin.
@@ -241,7 +275,7 @@ struct GameView: View {
     }
 
     private var canBuild: Bool {
-        guard let info = library.info, library.device != nil, library.setupMissing.isEmpty, !library.settingUp else { return false }
+        guard let info = library.info, info.folder == library.current?.folder, library.device != nil, library.setupMissing.isEmpty, !library.settingUp, !library.transferringSaves, library.checkingAddonGame == nil else { return false }
         return info.prepared || (!info.sources.isEmpty && library.keys != nil)
     }
 }
@@ -251,13 +285,24 @@ struct Header: View {
 
     var body: some View {
         if let info = library.info {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(info.name).font(.title2.weight(.semibold))
-                Text([info.version.isEmpty ? nil : "Version \(info.version)", info.title_id.isEmpty ? nil : "ID: \(info.title_id)", info.built == true ? "Built" : "Ready to build"]
-                    .compactMap { $0 }.joined(separator: " · ")).foregroundStyle(.secondary)
-                if let days = info.signing?.days_left, days < 3, info.signing?.free_team == true {
-                    Label(days < 0 ? "This install's signature has expired, so the TV won't open it. Build & Install renews it." : "This install stops opening in \(days) day\(days == 1 ? "" : "s"). Build & Install renews it.",
-                          systemImage: "clock.badge.exclamationmark").foregroundStyle(.orange)
+            TimelineView(.periodic(from: .now, by: 60)) { context in
+                let status = library.buildStatus(for: library.selection ?? info.folder, built: info.built == true)
+                let expiry = status == "Built" ? SigningExpiry(info.signing?.expires) : nil
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(info.name).font(.title2.weight(.semibold))
+                    Text([info.version.isEmpty ? nil : "Version \(info.version)",
+                          info.title_id.isEmpty ? nil : "ID: \(info.title_id)", status,
+                          expiry?.label(at: context.date)]
+                        .compactMap { $0 }.joined(separator: " · "))
+                        .foregroundStyle(.secondary)
+                        .help("Expiry comes from this build’s signing profile and is shown in your Mac’s local time.")
+                    if let expiry, expiry.date.timeIntervalSince(context.date) < 3 * 86_400,
+                       info.signing?.free_team == true {
+                        Label(expiry.date <= context.date
+                              ? "This build’s signature has expired. Build & Install renews it."
+                              : "Build & Install renews the signature before it expires.",
+                              systemImage: "clock.badge.exclamationmark").foregroundStyle(.orange)
+                    }
                 }
             }
         } else {
@@ -364,7 +409,9 @@ struct ArtworkCard: View {
             ZStack {
                 RoundedRectangle(cornerRadius: 10).fill(.quaternary)
                 if let preview = library.preview {
-                    Image(nsImage: preview).resizable().aspectRatio(5.0 / 3.0, contentMode: .fit).clipShape(RoundedRectangle(cornerRadius: 10))
+                    ArtworkPositioningPreview(preview: preview)
+                        .id(library.selection)
+                        .clipShape(RoundedRectangle(cornerRadius: 10))
                 } else {
                     VStack(spacing: 6) {
                         Image(systemName: "photo").font(.title)
@@ -458,8 +505,8 @@ struct SettingsForm: View {
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
             Section("Saves") {
-                Button("Manage Saves…") { openWindow(id: "manage-saves") }.disabled(library.isBusy)
-                Text("While TVPort is open, it backs up each built game's saves from the Apple TV every 5 minutes, only reading the TV. Enable iCloud backups in Manage Saves to keep new backups in iCloud Drive, in TVPort Saves.")
+                Button("Manage Saves…") { openWindow(id: "manage-saves") }
+                Text("While TVPort is open, it backs up all supported installed games’ saves from the Apple TV every 5 minutes, only reading the TV. Enable iCloud backups in Manage Saves to keep new backups in iCloud Drive, in TVPort Saves.")
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 TextField("Players", text: playersBinding, prompt: Text("Names, separated by commas"))
                 Text("With two or more names, the Apple TV asks who's playing, and each person gets their own saves. The first name picked keeps the saves already on the TV. Takes effect at the next Build & Install.")
@@ -611,34 +658,35 @@ struct ProgressPanel: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
-                switch library.run {
+                switch library.selectedRun {
                 case .idle:
-                    if !library.stage.isEmpty { Text(library.stage).foregroundStyle(.secondary) }
+                    if !library.selectedStage.isEmpty { Text(library.selectedStage).foregroundStyle(.secondary) }
                 case .running:
                     ProgressView().controlSize(.small)
-                    Text(library.stage).lineLimit(1)
-                case .succeeded: Label(library.stage, systemImage: "checkmark.circle.fill").foregroundStyle(.green)
+                    Text(library.selectedStage).lineLimit(1)
+                case .succeeded: Label(library.selectedStage, systemImage: "checkmark.circle.fill").foregroundStyle(.green)
                 case .failed: Label("Failed", systemImage: "xmark.octagon.fill").foregroundStyle(.red)
                 }
-                if !library.log.isEmpty {
-                    if library.run != .idle || !library.stage.isEmpty {
+                if !library.selectedLog.isEmpty {
+                    if library.selectedRun != .idle || !library.selectedStage.isEmpty {
                         Text("|").foregroundStyle(.secondary).accessibilityHidden(true)
                     }
                     Button(showLog ? "Hide Log" : "Show Log") { showLog.toggle() }.buttonStyle(.link)
                 }
                 Spacer()
             }
-            if library.run == .running, let progress = library.progress { ProgressView(value: progress) }
-            if case .failed(let message) = library.run {
+            if library.selectedRun == .running, let progress = library.selectedProgress { ProgressView(value: progress) }
+            if case .failed(let message) = library.selectedRun {
                 Text(message).font(.callout).textSelection(.enabled).lineLimit(8).foregroundStyle(.red)
             }
-            if showLog && !library.log.isEmpty {
-                SelectableLogView(text: library.log.joined(separator: "\n"))
+            if showLog && !library.selectedLog.isEmpty {
+                SelectableLogView(text: library.selectedLog.joined(separator: "\n"))
                     .frame(height: 170)
             }
         }
         .padding(12)
-        .onChange(of: library.log.isEmpty) { _, isEmpty in
+        .onChange(of: library.selection) { _, _ in showLog = false }
+        .onChange(of: library.selectedLog.isEmpty) { _, isEmpty in
             if isEmpty { showLog = false }
         }
     }

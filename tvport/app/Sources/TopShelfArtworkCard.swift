@@ -23,7 +23,8 @@ struct TopShelfArtworkCard: View {
             ZStack {
                 RoundedRectangle(cornerRadius: 10).fill(.quaternary)
                 if let preview = library.topShelfPreview {
-                    Image(nsImage: preview).resizable().aspectRatio(8.0 / 3.0, contentMode: .fit)
+                    ArtworkPositioningPreview(preview: preview, topShelf: true)
+                        .id(library.selection)
                 }
                 if library.topShelfPreview == nil || targeted {
                     Text("Drop PNG or JPEG\n1920 × 720 (8:3)")

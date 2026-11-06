@@ -31,7 +31,7 @@ struct Game: Codable, Identifiable, Hashable {
     var artwork: String?
     var artworkCrop: ArtworkCrop?
     var topShelfArtwork: String?
-    var topShelfCrop: ArtworkCrop?
+    var topShelfCrop: ArtworkCrop? = ArtworkCrop()
     var buildFolder: String?
     var buildNextToOriginal: Bool?
     var lastBuildPath: String?
@@ -49,6 +49,12 @@ struct Game: Codable, Identifiable, Hashable {
     var id: String { folder }
 }
 
+struct BuildResult {
+    let run: Run
+    let stage: String
+    let log: [String]
+}
+
 enum Run: Equatable {
     case idle, running, succeeded, failed(String)
 }
@@ -56,7 +62,9 @@ enum Run: Equatable {
 @MainActor
 final class Library: ObservableObject {
     @Published var games: [Game] = []
-    @Published var selection: Game.ID?
+    @Published var selection: Game.ID? {
+        didSet { if oldValue != selection { restoreSelectedArtwork() } }
+    }
     @Published var info: GameInfo?
     @Published var automaticArtwork: String?
     @Published var artworkStatus = ""
@@ -66,6 +74,9 @@ final class Library: ObservableObject {
     @Published var device: AppleTV.ID?
     @Published var team = ""
     @Published var run = Run.idle
+    @Published private(set) var runGameID: Game.ID?
+    @Published private(set) var buildQueue = BuildQueue()
+    @Published private var completedBuilds: [Game.ID: BuildResult] = [:]
     @Published var stage = ""
     @Published var progress: Double?
     @Published var log: [String] = []
@@ -82,6 +93,8 @@ final class Library: ObservableObject {
     @Published var setupFailure: String?
     @Published var showingSetup = false
     @Published var transferringSaves = false
+    @Published private(set) var automaticallyBackingUp = false
+    @Published private(set) var automaticBackupNotice: String?
     @Published var backups: [String: BackupStatus] = [:]
     @Published var icloudBackups = UserDefaults.standard.bool(forKey: "BackUpToICloud") {
         didSet { UserDefaults.standard.set(icloudBackups, forKey: "BackUpToICloud") }
@@ -93,6 +106,22 @@ final class Library: ObservableObject {
     private var building: Task<Void, Never>?
     private var previewTask: Task<Void, Never>?
     private var previewRequest = UUID()
+    private struct PreviewKey: Equatable {
+        let art: String
+        let artStamp: String
+        let crop: ArtworkCrop?
+        let shelfArt: String?
+        let shelfStamp: String
+        let shelfCrop: ArtworkCrop?
+    }
+    private struct CachedPreview {
+        let key: PreviewKey
+        let icon: NSImage
+        let shelf: NSImage
+        let automaticArtwork: String?
+    }
+    private var artworkPreviews: [Game.ID: CachedPreview] = [:]
+    private var recentArtwork: [Game.ID] = []
     private static let backupInterval: Double = 300
     private static let retryInterval: Double = 60   // while the TV cannot be reached, so a round comes soon after it can
 
@@ -108,7 +137,35 @@ final class Library: ObservableObject {
     var artworkPath: String? { current?.artwork ?? automaticArtwork ?? info?.icon }
 
     var current: Game? { games.first { $0.id == selection } }
-    var isBusy: Bool { run == .running || settingUp || transferringSaves || checkingAddonGame != nil }
+    // Keep build results and their log attached to the game that started the build.
+    // Busy state remains global, including when another game is selected.
+    var selectedRun: Run { selectedBuildResult?.run ?? .idle }
+    var selectedStage: String { selectedBuildResult?.stage ?? "" }
+    var selectedLog: [String] { selectedBuildResult?.log ?? [] }
+    var selectedProgress: Double? { runGameID == selection ? progress : nil }
+    private var selectedBuildResult: BuildResult? {
+        if runGameID == nil || runGameID == selection { return BuildResult(run: run, stage: stage, log: log) }
+        return selection.flatMap { completedBuilds[$0] }
+    }
+    var showsRunForSelection: Bool { selectedRun != .idle || !selectedStage.isEmpty || !selectedLog.isEmpty }
+    var queuedBuildCount: Int { buildQueue.pending.count + (buildQueue.active == nil ? 0 : 1) }
+    var buildQueueSummary: String {
+        if buildQueue.paused { return "\(queuedBuildCount) in queue · paused" }
+        if buildQueue.active != nil {
+            return "\(queuedBuildCount) in queue · 1 building, \(buildQueue.pending.count) waiting"
+        }
+        return "\(queuedBuildCount) in queue · waiting"
+    }
+    func buildBadge(for gameID: Game.ID) -> String? {
+        if buildQueue.active?.gameID == gameID { return buildQueue.paused ? "Stopping…" : "Building" }
+        guard let waitingPosition = buildQueue.position(gameID) else { return nil }
+        let position = waitingPosition + (buildQueue.active == nil ? 0 : 1)
+        return buildQueue.paused ? "Paused · \(position) in queue" : "Queued · \(position)"
+    }
+    func buildStatus(for gameID: Game.ID, built: Bool) -> String {
+        buildBadge(for: gameID) ?? (built ? "Built" : "Ready to build")
+    }
+    var isBusy: Bool { buildQueue.active != nil || !buildQueue.pending.isEmpty || run == .running || settingUp || transferringSaves || automaticallyBackingUp || checkingAddonGame != nil }
     /// Unknown until the first check, which then does not hold anything back.
     var setupMissing: [Check] { setup?.checks.filter { !$0.ok } ?? [] }
     var bundleID: String? { info?.bundle_id }
@@ -135,6 +192,11 @@ final class Library: ObservableObject {
     }
 
     func remove(_ game: Game) {
+        guard buildQueue.active?.gameID != game.id else { return }
+        buildQueue.remove(game.id)
+        completedBuilds.removeValue(forKey: game.id)
+        artworkPreviews.removeValue(forKey: game.id)
+        recentArtwork.removeAll { $0 == game.id }
         games.removeAll { $0.id == game.id }
         save()
         if selection == game.id { selection = games.first?.id }
@@ -178,13 +240,17 @@ final class Library: ObservableObject {
 
     /// Reads the selected game's folder and refreshes the Apple TV list.
     func refresh() async {
+        guard !Task.isCancelled else { return }
+        let gameID = selection
         previewTask?.cancel(); previewRequest = UUID()
-        info = nil; preview = nil; topShelfPreview = nil; automaticArtwork = nil; artworkStatus = ""; diagnosis = nil; notice = nil
+        // A same-game refresh must keep its existing artwork while metadata is read.
+        // In particular, cancelling a build must not clear images from a cancelled task.
+        diagnosis = nil; notice = nil
         await refreshDevices()
-        guard let game = current else { return }
+        guard !Task.isCancelled, selection == gameID, let game = current else { return }
         do {
             let found = try await Backend.ask(GameInfo.self, ["inspect", game.folder])
-            guard selection == game.id else { return }
+            guard !Task.isCancelled, selection == game.id else { return }
             info = found
             if team.isEmpty, let known = found.team { team = known }
             update {
@@ -194,10 +260,13 @@ final class Library: ObservableObject {
                 $0.built = found.built ?? false
             }
             let titleID = found.artwork_title_id ?? found.title_id
-            automaticArtwork = ArtworkStore.cachedBanner(titleID)?.path
+            automaticArtwork = ArtworkStore.cachedBanner(titleID)?.path ?? automaticArtwork
             await renderPreview()
             await findArtwork(titleID: titleID, gameID: game.id)
-        } catch { notice = error.localizedDescription }
+        } catch {
+            guard !Task.isCancelled, selection == gameID else { return }
+            notice = error.localizedDescription
+        }
     }
 
     func findArtwork(titleID: String, gameID: Game.ID) async {
@@ -236,7 +305,7 @@ final class Library: ObservableObject {
     }
 
     func setTopShelfArtwork(_ url: URL?) {
-        update { $0.topShelfArtwork = url?.path; $0.topShelfCrop = nil }
+        update { $0.topShelfArtwork = url?.path; $0.topShelfCrop = ArtworkCrop() }
         schedulePreview()
     }
 
@@ -254,11 +323,46 @@ final class Library: ObservableObject {
         }
     }
 
+    private func previewKey(_ game: Game, art: String) -> PreviewKey {
+        func stamp(_ path: String?) -> String {
+            guard let path, let attributes = try? FileManager.default.attributesOfItem(atPath: path) else { return "" }
+            return "\(attributes[.modificationDate] ?? "")|\(attributes[.size] ?? "")"
+        }
+        return PreviewKey(art: art, artStamp: stamp(art), crop: game.artworkCrop,
+                          shelfArt: game.topShelfArtwork, shelfStamp: stamp(game.topShelfArtwork), shelfCrop: game.topShelfCrop)
+    }
+
+    private func restoreSelectedArtwork() {
+        previewTask?.cancel(); previewRequest = UUID()
+        info = nil; diagnosis = nil; notice = nil; artworkStatus = ""
+        guard let game = current, let cached = artworkPreviews[game.id],
+              cached.key == previewKey(game, art: game.artwork ?? cached.key.art) else {
+            preview = nil; topShelfPreview = nil; automaticArtwork = nil
+            return
+        }
+        preview = cached.icon; topShelfPreview = cached.shelf
+        automaticArtwork = cached.automaticArtwork
+        touchArtwork(game.id)
+    }
+
+    private func touchArtwork(_ gameID: Game.ID) {
+        recentArtwork.removeAll { $0 == gameID }
+        recentArtwork.append(gameID)
+        // Bound decoded-image memory while keeping recently visited games instant.
+        while recentArtwork.count > 20 { artworkPreviews.removeValue(forKey: recentArtwork.removeFirst()) }
+    }
+
     /// Preview and installed artwork use the same renderer and crop arguments.
     func renderPreview() async {
         let request = UUID()
         previewRequest = request
         guard let game = current, let art = artworkPath ?? current?.topShelfArtwork else { preview = nil; topShelfPreview = nil; return }
+        let key = previewKey(game, art: art)
+        if let cached = artworkPreviews[game.id], cached.key == key {
+            preview = cached.icon; topShelfPreview = cached.shelf
+            touchArtwork(game.id)
+            return
+        }
         let out = Self.previews.appendingPathComponent(UUID().uuidString + ".png")
         defer { try? FileManager.default.removeItem(at: out) }
         struct Answer: Decodable { let preview: String }
@@ -272,6 +376,11 @@ final class Library: ObservableObject {
                 + (game.artworkCrop?.arguments ?? []) + game.topShelfArguments)
             guard previewRequest == request, current?.id == game.id, !Task.isCancelled else { return }
             topShelfPreview = NSImage(contentsOf: shelfOut)
+            if let preview, let topShelfPreview {
+                artworkPreviews[game.id] = CachedPreview(key: key, icon: preview, shelf: topShelfPreview,
+                                                        automaticArtwork: automaticArtwork ?? info?.icon)
+                touchArtwork(game.id)
+            }
         } catch {
             guard previewRequest == request, current?.id == game.id, !Task.isCancelled else { return }
             preview = nil; topShelfPreview = nil
@@ -280,13 +389,16 @@ final class Library: ObservableObject {
     }
 
     func build(install: Bool) {
-        guard let game = current, !isBusy else { return }
+        guard let game = current, let info, info.folder == game.folder,
+              !settingUp, !transferringSaves, checkingAddonGame == nil,
+              setupMissing.isEmpty, !install || device != nil,
+              buildQueue.active?.gameID != game.id, buildQueue.position(game.id) == nil else { return }
         var arguments = [game.folder, "--mode", game.mode.rawValue, "--texture-cap", String(game.texture.rawValue)]
         if game.swapABXY == true { arguments.append("--swap-ab-xy") }
         if game.showFPS { arguments.append("--fps") }
-        if let scale = game.renderScale, scale < 1, info?.render_scale == true { arguments += ["--render-scale", String(scale)] }
-        if game.coolWhenHot == false, info?.frame_step == true { arguments.append("--no-thermal-cap") }
-        if let fps = game.fpsTarget, (info?.fps_target ?? 0) != 0, fps != info?.fps_target { arguments += ["--fps-target", String(fps)] }
+        if let scale = game.renderScale, scale < 1, info.render_scale == true { arguments += ["--render-scale", String(scale)] }
+        if game.coolWhenHot == false, info.frame_step == true { arguments.append("--no-thermal-cap") }
+        if let fps = game.fpsTarget, (info.fps_target ?? 0) != 0, fps != info.fps_target { arguments += ["--fps-target", String(fps)] }
         if !team.isEmpty { arguments += ["--team", team] }
         if let keys { arguments += ["--keys", keys] }
         if let players = game.players, !players.isEmpty { arguments += ["--players", players] }
@@ -295,24 +407,62 @@ final class Library: ObservableObject {
         arguments += game.topShelfArguments
         if icloudBackups { arguments.append("--icloud") }
         if install, let device { arguments += ["--device", device] }
+        buildQueue.enqueue(QueuedBuild(gameID: game.id, name: game.name, arguments: arguments, install: install))
+        // A new standalone build after an earlier failure is an explicit retry.
+        if buildQueue.active == nil && buildQueue.pending.count == 1 { buildQueue.resume() }
+        startNextBuild()
+    }
+
+    func removeQueuedBuild(_ gameID: Game.ID) { buildQueue.remove(gameID) }
+
+    func resumeBuildQueue() {
+        guard buildQueue.active == nil, !settingUp, !transferringSaves, checkingAddonGame == nil else { return }
+        buildQueue.resume()
+        startNextBuild()
+    }
+
+    private func startNextBuild() {
+        guard !automaticallyBackingUp, !settingUp, !transferringSaves else { return }
+        guard let request = buildQueue.next() else { return }
+        runGameID = request.gameID
+        completedBuilds.removeValue(forKey: request.gameID)
         run = .running; stage = "Starting"; progress = nil; log = []; notice = nil
         building = Task {
             var finished = false
-            for await event in Backend.stream(["build"] + arguments) {
+            for await event in Backend.stream(["build"] + request.arguments) {
                 switch event {
                 case .stage(let name): stage = name; progress = nil; append(name)
                 case .log(let line): append(line)
                 case .progress(let value): progress = value
                 case .failed(let message): run = .failed(message); finished = true
-                case .done: run = .succeeded; stage = install ? "Installed on the Apple TV" : "Built"; progress = nil; finished = true
+                case .done: run = .succeeded; stage = request.install ? "Installed on the Apple TV" : "Built"; progress = nil; finished = true
                 }
             }
-            if !finished { run = Task.isCancelled ? .idle : .failed("The build stopped without saying why. See the log.") }
-            await refresh()
+            if Task.isCancelled { run = .idle; stage = "Stopped"; progress = nil }
+            else if !finished { run = .failed("The build stopped without saying why. See the log.") }
+            let succeeded = run == .succeeded
+            completedBuilds[request.gameID] = BuildResult(run: run, stage: stage, log: log)
+            // Refresh the completed game's metadata even if the user selected another game.
+            if succeeded,
+               let found = try? await Backend.ask(GameInfo.self, ["inspect", request.gameID]),
+               let index = games.firstIndex(where: { $0.id == request.gameID }) {
+                games[index].built = found.built
+                games[index].lastBuildPath = found.build_path
+                save()
+            }
+            building = nil
+            buildQueue.finish(succeeded: succeeded && !Task.isCancelled)
+            startNextBuild()
+            if !Task.isCancelled && selection == request.gameID { await refresh() }
         }
     }
 
-    func cancel() { building?.cancel(); stage = "Stopped"; run = .idle }
+    func cancel() {
+        guard buildQueue.active != nil else { return }
+        buildQueue.pause()
+        stage = "Stopping…"
+        building?.cancel()
+    }
 
     /// What a build needs from this Mac. The first start of each release also unpacks the engine and makes its Python, without being asked.
     func checkSetup() async {
@@ -374,17 +524,31 @@ final class Library: ObservableObject {
     /// One round of automatic backups of every built game. It only reads the TV (backend.py autobackup), and is quiet when the TV is asleep or away, or the game is not installed.
     private func backUpRound() async -> Double {
         if devices.isEmpty { await refreshDevices() }
-        let folders = games.filter { !$0.titleID.isEmpty }.map(\.folder)
+        let folders = games.map(\.folder)
         guard let device else { return Self.retryInterval }
-        guard !folders.isEmpty, !isBusy else { return Self.backupInterval }   // builds and imports manage their own backups
+        guard !isBusy else { return Self.backupInterval }   // builds and imports manage their own backups
+        automaticallyBackingUp = true
+        automaticBackupNotice = nil
+        defer {
+            automaticallyBackingUp = false
+            startNextBuild()
+        }
         let arguments = ["autobackup", "--device", device] + folders.flatMap { ["--folder", $0] } + (icloudBackups ? ["--icloud"] : [])
-        guard let round = try? await Backend.ask(BackupRound.self, arguments) else { return Self.backupInterval }
+        guard let round = try? await Backend.ask(BackupRound.self, arguments) else {
+            automaticBackupNotice = "Automatic backup could not finish. TVPort will try again automatically."
+            return Self.retryInterval
+        }
+        if round.state == "unreachable" {
+            automaticBackupNotice = "Apple TV unavailable. Automatic backup will try again; saved copies are still available."
+        } else if round.state == "partial" {
+            automaticBackupNotice = "Some saves could not be backed up. TVPort will try again automatically."
+        }
         icloudAvailable = round.icloud
         for (folder, var status) in round.games {
             status.checked = status.checked ?? backups[folder]?.checked   // a round that could not ask keeps the last time the copy matched the TV
             backups[folder] = status
         }
-        return round.state == "unreachable" ? Self.retryInterval : Self.backupInterval
+        return ["unreachable", "partial", "building"].contains(round.state) ? Self.retryInterval : Self.backupInterval
     }
 
     /// When the Mac's copy of a game's saves last matched the TV, or when its newest backup was made.

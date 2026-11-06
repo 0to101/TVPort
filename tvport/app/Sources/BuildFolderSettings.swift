@@ -10,7 +10,6 @@ struct TVPortCommands: Commands {
             Divider()
             SettingsLink { Text("Settings…") }
             Button("Manage Saves") { openWindow(id: "manage-saves") }
-                .disabled(library.isBusy)
         }
     }
 }

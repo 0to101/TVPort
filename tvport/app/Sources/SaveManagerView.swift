@@ -25,7 +25,7 @@ struct ImportedSaveBackup: Decodable, Identifiable {
     let status: String
     let folder: String
     var kind: String {
-        status == "imported-copy" ? "Local import" : status == "exported" ? "Apple TV backup" : "Safety backup"
+        status == "imported-copy" ? "Local import" : status == "automatic-backup" ? "Automatic backup" : status == "exported" ? "Apple TV backup" : "Safety backup"
     }
 }
 
@@ -69,6 +69,8 @@ struct SaveManagerView: View {
     @State private var restoring: ImportedSaveBackup?
     @State private var confirmingRestore = false
     @State private var restoreSlot = "save"
+    @State private var restoreCompletion: SaveRestoreCompletion?
+    @State private var showingRestoreCompletion = false
 
     private var game: InstalledSaveGame? { apps.first { $0.id == gameID } }
     private var busy: Bool { library.transferringSaves }
@@ -86,7 +88,7 @@ struct SaveManagerView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text("Manage Saves").font(.title2.weight(.semibold))
-            Text("Manage game saves and browse backups offline.")
+            Text("Browse backups offline. Automatic backups are created only when saves change, keeping the newest 10 per game and player.")
                 .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             HStack {
                 Picker("Apple TV", selection: $device) {
@@ -104,6 +106,7 @@ struct SaveManagerView: View {
                 Label("iCloud Drive is unavailable on this Mac. Backups are kept locally until it is available.", systemImage: "icloud.slash")
                     .font(.caption).foregroundStyle(.orange).fixedSize(horizontal: false, vertical: true)
             }
+            AutomaticBackupStatus()
             operationStatus
             if let connectionNotice {
                 Label(connectionNotice, systemImage: "wifi.slash").foregroundStyle(.secondary)
@@ -151,6 +154,9 @@ struct SaveManagerView: View {
         .padding(.horizontal, 20).padding(.bottom, 20).padding(.top, 10)
         .frame(minWidth: 860, minHeight: 620)
         .interactiveDismissDisabled(busy)
+        .onChange(of: library.automaticallyBackingUp) { _, backingUp in
+            if !backingUp && !busy { Task { await loadApps() } }
+        }
         .task {
             library.icloudAvailable = FileManager.default.fileExists(atPath: NSHomeDirectory() + "/Library/Mobile Documents/com~apple~CloudDocs")
             if library.devices.isEmpty { await library.refreshDevices() }
@@ -178,6 +184,11 @@ struct SaveManagerView: View {
             Button("Import Copy") { Task { await transfer(command: "store-save") } }
         } message: {
             Text("Add \(source?.files ?? 0) files from ‘\(source.map { URL(fileURLWithPath: $0.folder).lastPathComponent } ?? "")’ as a new saved copy for \(game?.name ?? "this game"). The Apple TV save stays unchanged. Choose Restore later to send this copy to the TV.")
+        }
+        .alert("Save restored to Apple TV", isPresented: $showingRestoreCompletion) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(restoreCompletion?.body ?? "The save was transferred and verified.")
         }
         .sheet(isPresented: $confirmingRestore) {
             VStack(alignment: .leading, spacing: 16) {
@@ -318,7 +329,7 @@ struct SaveManagerView: View {
             guard requested == device, !Task.isCancelled else { return }
             self.error = "Saved backups could not be read: " + error.localizedDescription
         }
-        guard !requested.isEmpty else { return }
+        guard !requested.isEmpty, !library.automaticallyBackingUp else { return }
         do {
             let answer = try await Backend.ask(Answer.self, ["installed-games", "--device", requested])
             guard requested == device, !Task.isCancelled else { return }
@@ -341,7 +352,7 @@ struct SaveManagerView: View {
         slots = []; slot = "save"; backups = []; message = nil; resultFolder = nil
         guard game?.compatible == true, !busy else { loadingSlots = false; return }
         await loadHistory()
-        guard online, availableApps.contains(gameID), !Task.isCancelled else { loadingSlots = false; return }
+        guard online, availableApps.contains(gameID), !library.automaticallyBackingUp, !Task.isCancelled else { loadingSlots = false; return }
         let requestedGame = gameID, requestedDevice = device
         loadingSlots = true; error = nil
         defer { if requestedGame == gameID && requestedDevice == device { loadingSlots = false } }
@@ -368,6 +379,10 @@ struct SaveManagerView: View {
 
     private func transfer(command: String, backup: ImportedSaveBackup? = nil) async {
         guard command == "store-save" ? canImportCopy : canTransfer else { return }
+        let restoredGame = game?.name ?? "Game"
+        let restoredPlayer = slots.first { $0.id == restoreSlot }?.name ?? "Selected player"
+        let restoredDevice = devices.first { $0.id == device }?.name ?? "Apple TV"
+        let restoredSlot = restoreSlot
         var args = [command]
         if command == "store-save" {
             guard let source else { return }
@@ -387,8 +402,18 @@ struct SaveManagerView: View {
             if let available = result.icloud_available { library.icloudAvailable = available }
             message = result.message; resultFolder = result.backup
             if command == "restore-save" {
-                let changedSlot = restoreSlot
+                let changedSlot = restoredSlot
                 slots = slots.map { $0.id == changedSlot ? SaveSlot(id: $0.id, name: $0.name, files: result.files) : $0 }
+                let completion = SaveRestoreCompletion(game: restoredGame, player: restoredPlayer,
+                                                       device: restoredDevice, files: result.files)
+                // Only reached after the backend's transfer and read-back verification succeed.
+                // Permission or delivery failures do not block transfers or change their result.
+                Task {
+                    if !(await SaveRestoreNotifications.shared.notify(completion)) {
+                        restoreCompletion = completion
+                        showingRestoreCompletion = true
+                    }
+                }
             }
         } catch { self.error = error.localizedDescription }
         await loadHistory()

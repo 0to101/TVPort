@@ -1,15 +1,5 @@
 import SwiftUI
 
-struct ArtworkCrop: Codable, Hashable {
-    var scale = 1.0
-    var x = 0.0
-    var y = 0.0
-
-    var arguments: [String] {
-        ["--art-scale", String(scale), "--art-x", String(x), "--art-y", String(y)]
-    }
-}
-
 struct ArtworkFramingControls: View {
     @EnvironmentObject var library: Library
 
@@ -30,6 +20,8 @@ struct ArtworkFramingControls: View {
                 Text("Crop to fill").tag(true)
             }
             if let crop {
+                Text("Drag the image to position it. Zoom in for more movement.")
+                    .font(.caption).foregroundStyle(.secondary)
                 HStack {
                     Text("Zoom")
                     Spacer()
